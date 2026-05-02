@@ -178,12 +178,21 @@ autogen/beta/network/
 
 Goal: minimum end-to-end with every load-bearing contract in place, tested against `LocalLink` only. Phase 1 lands as **three sequential milestones** (M1 → M2 → M3), each independently mergeable to `main` because `autogen.beta.network` is opt-in by import path. No milestone rewrites earlier work — every milestone is strictly additive.
 
+| Milestone | Status | Tests |
+|---|---|---|
+| Framework-core precondition | ✅ shipped (`77622fac9e`) | 22 tests |
+| M1 — Foundation | ✅ shipped (`99d9e6da82`) | 5 integration tests |
+| M2 — Consulting loop | ✅ shipped (this PR) | 8 integration tests |
+| M3 — Multi-party + observability | ⏳ pending | — |
+
+Beta suite total: **1509 passing**, zero regressions across milestones.
+
 **Framework-core precondition (separate PR; lands before M1):**
 - New `autogen/beta/task.py` — `Task`, `TaskSpec`, `TaskState`, `TaskMetadata`, `Agent.task(...)` entry point, `TaskInject` annotation
 - Extend existing `autogen/beta/events/task_events.py`: add `TaskExpired`; widen `TaskCompleted.result` to `Any`; add optional `spec` to `TaskStarted` and `payload` to `TaskProgress` (additive, backward-compatible)
 - `_spawn_subtask` is **not** wrapped in a Task in V1 — `_run_task` already emits `TaskStarted/Progress/Completed/Failed` on the parent stream, which is the contract the network mirror observes. Wrapping (so `TaskInject` resolves inside subagent context) is a Phase 2 nice-to-have
 
-#### M1 — Foundation (~2 weeks, ~1000 LOC)
+#### M1 — Foundation ✅ (shipped, ~1100 LOC)
 
 Pure plumbing. No LLM call yet; tested with raw envelopes only.
 
@@ -200,7 +209,7 @@ Pure plumbing. No LLM call yet; tested with raw envelopes only.
 
 Exit: integration test where two `AgentClient`s register through `LocalLink` and exchange raw envelopes; `Hub.hydrate()` rebuilds passport/resume/rule caches from disk.
 
-#### M2 — Consulting loop (~3 weeks, ~1500 LOC)
+#### M2 — Consulting loop ✅ (shipped, ~1900 LOC)
 
 First end-to-end LLM-driven session.
 
@@ -215,11 +224,17 @@ First end-to-end LLM-driven session.
 - `hub/sweepers.py` — `_TtlSweeper` only (cascades task expiry on session close)
 - Hub access + limits enforcement (delegation depth + concurrency caps)
 - Adapter state cache + `Hub.hydrate()` re-folds active session WALs
-- Adapter state cache **O(1) benchmark test** at 1000-turn sessions
 
-Exit: LLM-driven 1:1 consulting end-to-end. Alice registers, Bob registers, Alice's LLM calls `delegate(target="bob", prompt=..., blocking=True)`, Bob's notify handler runs Bob's LLM, Bob replies via `say(...)`, consulting auto-closes on TTL or completion.
+**Design refinements during M2 (deviations from the original plan):**
+- `NotifyFrame` stamps `recipient_id` per-delivery — the hub iterates per-recipient anyway, and stamping the target lets `HubClient` demux directly without re-walking session participants. Required so broadcasts (`audience=None`) route correctly when one connection hosts multiple identities.
+- DI inject annotations use `Annotated[Any, Inject(...)]` rather than the concrete classes — Pydantic (used by the `tool` decorator's signature schema) cannot generate a JSON schema for `Session` / `AgentClient` / `Hub` (non-Pydantic types). Type precision is lost, but these injects never appear in the LLM-facing parameter surface (they resolve from `context.dependencies`).
+- Default notify handler does an adapter-driven "can I respond?" probe (`adapter.validate_send` with self as sender) before engaging the LLM. Prevents the consulting initiator from auto-firing a second LLM turn when the respondent's reply lands on its inbox.
+- Consulting adapter returns `next_state=CLOSED` directly (skipping the transitional `CLOSING` state). M2 has no async cleanup phase between CLOSING → CLOSED; the transitional state is reserved for future adapters that need a quiescence window.
+- Adapter state cache **O(1) benchmark deferred to M3** — consulting is 1Q1R (max 2 turns), so a "1000-turn" benchmark is meaningful only with the `discussion` adapter.
 
-#### M3 — Multi-party + observability (~3 weeks, ~1500 LOC)
+Exit: LLM-driven 1:1 consulting end-to-end. Alice registers, Bob registers, Alice's LLM calls `delegate(target="bob", prompt=..., blocking=True)`, Bob's notify handler runs Bob's LLM, Bob replies, consulting auto-closes via the adapter's `on_accepted`. Validated by `test/beta/network/test_m2_consulting.py` (8 tests).
+
+#### M3 — Multi-party + observability ⏳ (pending, ~1500 LOC)
 
 Full V1 surface.
 
@@ -237,6 +252,7 @@ Full V1 surface.
 - `AgentClient.set_resume` / `set_skill` / `add_example` / `set_rule` — tenant-driven mutation paths
 - Liveness + stall + idle events from the 3 expectations
 - `Hub.hydrate()` correctness test at scale (100 active sessions × 1000 envelopes)
+- Adapter state cache **O(1) benchmark** (deferred from M2; meaningful with `discussion` adapter at 1000-turn sessions)
 
 Exit: appendix's 5-way `discussion` runs end-to-end with bounded prompt size. An LLM-driven Agent calls `peers(action="find", sort_by="track_record")` → `peers(action="describe")` (reads target's SKILL.md verbatim) → `delegate(payload=, capability=)` → `context(action="search")` → `say` → `sessions(action="close")`. The hub records `Resume.observed[capability]` on the terminal task event.
 

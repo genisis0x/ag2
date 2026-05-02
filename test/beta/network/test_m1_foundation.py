@@ -39,53 +39,8 @@ def _agent(name: str) -> Agent:
     return Agent(name=name, config=AnthropicConfig(model="claude-sonnet-4-6"))
 
 
-@pytest.mark.asyncio
-async def test_register_and_exchange_envelope_via_hub_client() -> None:
-    """End-to-end M1 happy path: register both, send, receive."""
-    store = MemoryKnowledgeStore()
-    hub = await Hub.open(store)
-    link = LocalLink(hub)
-
-    alice_hc = HubClient(link, hub=hub)
-    bob_hc = HubClient(link, hub=hub)
-
-    alice = await alice_hc.register(_agent("alice"), Passport(name="alice"), Resume())
-    bob = await bob_hc.register(_agent("bob"), Passport(name="bob"), Resume())
-
-    received: list[Envelope] = []
-
-    async def on_envelope(env: Envelope) -> None:
-        received.append(env)
-
-    bob.on_envelope(on_envelope)
-
-    envelope = Envelope(
-        session_id="s1",
-        sender_id=alice.agent_id,
-        audience=[bob.agent_id],
-        event_type=EV_TEXT,
-        event_data={"text": "hello bob"},
-    )
-    eid = await alice.send_envelope(envelope)
-
-    # Allow the demuxing loop to drain.
-    for _ in range(20):
-        if received:
-            break
-        await asyncio.sleep(0.01)
-
-    assert len(received) == 1
-    assert received[0].envelope_id == eid
-    assert received[0].event_data == {"text": "hello bob"}
-
-    # Hub WAL persisted.
-    wal = await hub.read_wal("s1")
-    assert len(wal) == 1
-    assert wal[0].sender_id == alice.agent_id
-
-    await alice_hc.close()
-    await bob_hc.close()
-    await hub.close()
+# Session-based envelope round-trip lives in test_m2_consulting.py — by M2
+# all envelope dispatch goes through a real session adapter.
 
 
 @pytest.mark.asyncio
@@ -188,43 +143,6 @@ async def test_outbound_access_denied() -> None:
     )
     with pytest.raises(AccessDeniedError):
         await alice.send_envelope(envelope)
-
-    await hc.close()
-    await hub.close()
-
-
-@pytest.mark.asyncio
-async def test_inbound_access_silently_drops() -> None:
-    """Recipient's inbound_from whitelist drops the notify silently."""
-    store = MemoryKnowledgeStore()
-    hub = await Hub.open(store)
-    link = LocalLink(hub)
-    hc = HubClient(link, hub=hub)
-
-    alice = await hc.register(_agent("alice"), Passport(name="alice"), Resume())
-    bob = await hc.register(
-        _agent("bob"),
-        Passport(name="bob"),
-        Resume(),
-        rule=Rule(access=AccessBlock(inbound_from=["carol"])),  # alice not allowed in
-    )
-
-    received: list[Envelope] = []
-    bob.on_envelope(lambda env: received.append(env))  # type: ignore[arg-type, return-value]
-
-    envelope = Envelope(
-        session_id="s1",
-        sender_id=alice.agent_id,
-        audience=[bob.agent_id],
-        event_type=EV_TEXT,
-        event_data={},
-    )
-    eid = await alice.send_envelope(envelope)
-    assert eid  # post succeeds (envelope is in WAL for audit)
-
-    # Wait briefly to confirm bob's callback never fires.
-    await asyncio.sleep(0.05)
-    assert received == []
 
     await hc.close()
     await hub.close()

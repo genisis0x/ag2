@@ -26,6 +26,7 @@ from ..rule import Rule
 from ..transport.frames import NotifyFrame
 from ..transport.local import LocalLink, LocalLinkClient
 from .agent_client import AgentClient
+from .plugin import NetworkPlugin
 
 if TYPE_CHECKING:
     from ..hub import Hub
@@ -70,7 +71,7 @@ class HubClient:
         try:
             async for frame in self._client_link.frames():
                 if isinstance(frame, NotifyFrame):
-                    await self._dispatch_notify(frame.envelope)
+                    await self._dispatch_notify(frame)
                 # Other frame kinds (Accept/Error/Pong/Event) are M3 routes —
                 # M1's send path goes direct via Hub.post_envelope so AcceptFrame
                 # is unused here.
@@ -80,15 +81,26 @@ class HubClient:
             # Receive loops must not propagate; M3 audit logs the cause.
             pass
 
-    async def _dispatch_notify(self, envelope: Envelope) -> None:
-        if envelope.audience is None:
-            # M1 doesn't broadcast (Hub doesn't dispatch broadcasts);
-            # M2 wires participant tracking.
+    async def _dispatch_notify(self, frame: NotifyFrame) -> None:
+        """Route the envelope to the recipient stamped on the frame.
+
+        The hub sets ``recipient_id`` per delivery so broadcasts
+        (``audience=None``) reach the right ``AgentClient`` without
+        the demuxer re-walking session participants. Frames missing a
+        ``recipient_id`` (M1 legacy) fall back to ``audience``-based
+        routing.
+        """
+        if frame.recipient_id:
+            client = self._clients.get(frame.recipient_id)
+            if client is not None:
+                await client.receive(frame.envelope)
             return
-        for recipient_id in envelope.audience:
+        if frame.envelope.audience is None:
+            return
+        for recipient_id in frame.envelope.audience:
             client = self._clients.get(recipient_id)
             if client is not None:
-                await client.receive(envelope)
+                await client.receive(frame.envelope)
 
     # ── Registration ─────────────────────────────────────────────────────────
 
@@ -100,14 +112,20 @@ class HubClient:
         *,
         skill_md: str | None = None,
         rule: Rule | None = None,
+        attach_plugin: bool = True,
     ) -> AgentClient:
         """Register an agent and return its ``AgentClient`` handle.
 
-        M1 simplification: register goes direct to the hub (in-process),
-        then the resulting ``agent_id`` is bound to this connection's
-        endpoint so dispatched ``NotifyFrame``s reach the right
-        ``AgentClient``. M3 / Phase 3 will swap to a ``HelloFrame``-driven
-        bind for cross-process correctness.
+        Direct hub call for register (in-process); the resulting
+        ``agent_id`` is bound to this connection's endpoint so
+        dispatched ``NotifyFrame``s reach the right ``AgentClient``.
+        Phase 3 swaps to a ``HelloFrame``-driven bind for cross-process
+        correctness.
+
+        ``attach_plugin=True`` (default) attaches the ``NetworkPlugin``
+        which adds ``say`` and ``delegate`` to ``agent.tools`` and
+        appends ``NetworkContextPolicy`` to the assembly chain. Pass
+        ``False`` for tests that need a bare agent without LLM tools.
         """
         if self._closed:
             raise RuntimeError("HubClient is closed")
@@ -115,7 +133,9 @@ class HubClient:
         client_link = self._ensure_connected()
 
         effective_rule = rule if rule is not None else Rule()
-        passport = await self._hub.register(passport, resume, skill_md=skill_md, rule=effective_rule)
+        passport = await self._hub.register(
+            passport, resume, skill_md=skill_md, rule=effective_rule
+        )
         assert passport.agent_id is not None
         self._hub.bind_endpoint(client_link.endpoint_id, passport.agent_id)
 
@@ -128,6 +148,11 @@ class HubClient:
             hub_client=self,
         )
         self._clients[passport.agent_id] = client
+
+        if attach_plugin:
+            plugin = NetworkPlugin(client)
+            plugin.register(agent)
+
         return client
 
     # ── Discovery passthrough ────────────────────────────────────────────────

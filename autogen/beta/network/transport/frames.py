@@ -114,14 +114,19 @@ class ErrorFrame:
 
 @dataclass(slots=True)
 class NotifyFrame:
-    """hub → client: deliver an envelope to a participant.
+    """hub → client: deliver an envelope to a specific participant.
 
-    The receiving ``AgentClient`` routes to the registered notify
-    handler for the envelope's session.
+    ``recipient_id`` is the agent id this delivery is for — the hub
+    already iterates per-recipient when dispatching, so stamping the
+    target on the frame lets the ``HubClient`` demux directly without
+    re-walking the session participants. Required so broadcasts
+    (``audience=None``) route correctly when one connection hosts
+    multiple identities.
     """
 
     kind: ClassVar[str] = "notify"
     envelope: Envelope
+    recipient_id: str = ""
 
 
 @dataclass(slots=True)

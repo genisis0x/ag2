@@ -38,7 +38,7 @@ def make_delegate_tool(client: "AgentClient") -> object:
         *,
         capability: str | None = None,
         timeout: float = 300.0,
-        ag_client: AgentClientInject | None = None,
+        ag_client: AgentClientInject = None,
     ) -> str:
         """Open a one-shot consulting session with ``target`` and return its reply.
 

@@ -34,6 +34,7 @@ from ..envelope import (
 )
 from ..policies import AGENT_CLIENT_DEP, HUB_DEP, SESSION_DEP
 from ..session import SessionMetadata, SessionState
+from ..task_mirror import TaskMirror
 from ..views.base import ViewPolicy
 from .session import Session
 
@@ -165,11 +166,24 @@ async def _process_text(envelope: Envelope, client: "AgentClient") -> None:
 
     dependencies = stamp_dependencies(client, session)
 
-    reply = await client.agent.ask(
-        current_text,
-        stream=stream,
-        dependencies=dependencies,
+    # Attach the TaskMirror for the duration of the LLM turn so any
+    # ``agent.task(...)`` (typically via the ``tasks(action="start")``
+    # tool) surfaces ``ag2.task.*`` envelopes to the hub and triggers
+    # ``record_observation`` on capability-tagged terminal events.
+    mirror = TaskMirror(
+        hub=client._hub,
+        owner_id=client.agent_id,
+        session_id=metadata.session_id,
     )
+    sub_ids = mirror.attach(stream)
+    try:
+        reply = await client.agent.ask(
+            current_text,
+            stream=stream,
+            dependencies=dependencies,
+        )
+    finally:
+        mirror.detach(stream, sub_ids)
     body = reply.body
     if body:
         await session.send(body, causation_id=envelope.envelope_id)

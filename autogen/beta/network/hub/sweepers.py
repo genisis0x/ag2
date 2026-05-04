@@ -10,7 +10,8 @@ built on the ``_IntervalSweeper`` primitive.
 Sweepers are spawned by ``Hub.start()`` and cancelled by ``Hub.close()``.
 ``Hub.open()`` calls ``start()`` automatically; tests that don't want
 background timers can construct the hub with ``ttl_sweep_interval=0``
-(disables the TTL sweeper entirely).
+(disables the TTL sweeper entirely) or
+``expectation_sweep_interval=0`` (disables the expectation sweeper).
 """
 
 import asyncio

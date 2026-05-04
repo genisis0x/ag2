@@ -216,8 +216,9 @@ Tenants override per-session by passing `manifest_overrides={"expectations": [..
 | `consulting` | 1+1 | Strict 1Q1R: initiator sends one envelope, respondent sends one reply, session auto-closes. | `FullTranscript` |
 | `conversation` | 1+1 | Bidirectional, multi-turn. Either side may send. Explicit `close()` or TTL ends. | `WindowedSummary(recent_n=10)` |
 | `discussion` | 1+N (≥2) | Multi-participant turn-taking. `knobs={"ordering": "dynamic" \| "static" \| "round_robin"}`. | `WindowedSummary(recent_n=N*2)` |
+| `workflow` | 1+N (≥2) | Orchestrated flow driven by a declarative `TransitionGraph` in `knobs["graph"]`. Replaces AG2-classic's `GroupChat` + `Handoffs` + `AfterWork`. See [workflow.md](workflow.md). | `WindowedSummary(recent_n=N*2)` |
 
-Each adapter is < 200 LOC. `notification`, `broadcast`, `auction` ship in Phase 2 (or in `examples/`) as proofs that the Protocol is genuinely extensible — V1 framework-core doesn't include them.
+Each adapter is < 250 LOC. `notification`, `broadcast`, `auction` ship in Phase 2 (or in `examples/`) as proofs that the Protocol is genuinely extensible — V1 framework-core doesn't include them.
 
 ### Discussion ordering knobs
 

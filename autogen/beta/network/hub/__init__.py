@@ -12,7 +12,30 @@ modules — the trust boundary runs through ``HubClient`` /
 ``AgentClient`` (see ``client/``).
 """
 
+from .audit import (
+    AUDIT_KIND_AGENT_REGISTERED,
+    AUDIT_KIND_AGENT_UNREGISTERED,
+    AUDIT_KIND_EXPECTATION_VIOLATED,
+    AUDIT_KIND_RESUME_SET,
+    AUDIT_KIND_RULE_SET,
+    AUDIT_KIND_SKILL_SET,
+    AuditLog,
+)
 from .core import Hub
+from .expectations import (
+    AcksWithinEvaluator,
+    AuditHandler,
+    AutoCloseHandler,
+    ExpectationContext,
+    ExpectationEvaluator,
+    MaxSilenceEvaluator,
+    NotifySessionHandler,
+    ReplyWithinEvaluator,
+    Violation,
+    ViolationHandler,
+    default_evaluators,
+    default_handlers,
+)
 from .layout import (
     agents_root,
     audit_path,
@@ -31,11 +54,30 @@ from .layout import (
 )
 
 __all__ = (
+    "AUDIT_KIND_AGENT_REGISTERED",
+    "AUDIT_KIND_AGENT_UNREGISTERED",
+    "AUDIT_KIND_EXPECTATION_VIOLATED",
+    "AUDIT_KIND_RESUME_SET",
+    "AUDIT_KIND_RULE_SET",
+    "AUDIT_KIND_SKILL_SET",
+    "AcksWithinEvaluator",
+    "AuditHandler",
+    "AuditLog",
+    "AutoCloseHandler",
+    "ExpectationContext",
+    "ExpectationEvaluator",
     "Hub",
+    "MaxSilenceEvaluator",
+    "NotifySessionHandler",
+    "ReplyWithinEvaluator",
+    "Violation",
+    "ViolationHandler",
     "agents_root",
     "audit_path",
     "by_capability_path",
     "by_name_path",
+    "default_evaluators",
+    "default_handlers",
     "passport_path",
     "resume_path",
     "rule_path",

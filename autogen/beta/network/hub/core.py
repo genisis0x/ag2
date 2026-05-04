@@ -36,6 +36,8 @@ from autogen.beta.task import TERMINAL_TASK_STATES, TaskMetadata, TaskSpec, Task
 
 from ..adapters.base import SessionAdapter
 from ..adapters.consulting import ConsultingAdapter
+from ..adapters.conversation import ConversationAdapter
+from ..adapters.discussion import DiscussionAdapter
 from ..auth import AuthRegistry, default_registry
 from ..envelope import (
     EV_SESSION_CLOSED,
@@ -47,7 +49,7 @@ from ..envelope import (
     Envelope,
 )
 from ..errors import AccessDeniedError, NetworkError, NotFoundError, ProtocolError
-from ..identity import Passport, Resume
+from ..identity import ObservedStat, Passport, Resume, ResumeExample
 from ..ids import make_id
 from ..rule import Rule, parse_duration
 from ..session import (
@@ -71,6 +73,7 @@ from ..transport.frames import (
 from ..transport.link import LinkEndpoint
 from .layout import (
     agents_root,
+    by_capability_path,
     passport_path,
     resume_path,
     rule_path,
@@ -80,6 +83,21 @@ from .layout import (
     task_metadata_path,
     tasks_root,
     wal_path,
+)
+from .audit import (
+    AUDIT_KIND_AGENT_REGISTERED,
+    AUDIT_KIND_AGENT_UNREGISTERED,
+    AUDIT_KIND_RESUME_SET,
+    AUDIT_KIND_RULE_SET,
+    AUDIT_KIND_SKILL_SET,
+    AuditLog,
+)
+from .expectations import (
+    ExpectationContext,
+    ExpectationEvaluator,
+    ViolationHandler,
+    default_evaluators,
+    default_handlers,
 )
 from .sweepers import _IntervalSweeper
 
@@ -144,6 +162,7 @@ class Hub:
         auth: AuthRegistry | None = None,
         clock: Callable[[], str] | None = None,
         ttl_sweep_interval: float = 30.0,
+        expectation_sweep_interval: float = 10.0,
         invite_ack_timeout: float = 30.0,
     ) -> None:
         # __init__ stores params; side effects deferred to start()/hydrate().
@@ -151,7 +170,16 @@ class Hub:
         self._auth = auth if auth is not None else default_registry
         self._clock = clock if clock is not None else _utc_now_iso
         self._ttl_sweep_interval = ttl_sweep_interval
+        self._expectation_sweep_interval = expectation_sweep_interval
         self._invite_ack_timeout = invite_ack_timeout
+
+        # Audit log + expectation registries (M3).
+        self._audit_log = AuditLog(store)
+        self._expectation_evaluators: dict[str, ExpectationEvaluator] = {}
+        self._violation_handlers: dict[str, ViolationHandler] = {}
+        # session_id → set of (expectation_name, violator_id) already fired.
+        # Empty violator_id ("") represents session-wide violations.
+        self._fired_violations: dict[str, set[tuple[str, str]]] = {}
 
         # Identity caches.
         self._passports: dict[str, Passport] = {}
@@ -159,6 +187,10 @@ class Hub:
         self._rules: dict[str, Rule] = {}
         self._skills: dict[str, str] = {}
         self._name_to_id: dict[str, str] = {}
+        # capability name → set of agent_ids that claim or have observed it.
+        # Persisted as registry/by_capability.json on every mutation
+        # (rebuilt from resumes on hydrate — the file is a derived cache).
+        self._capability_index: dict[str, set[str]] = {}
 
         # Adapter registry.
         self._adapters: dict[tuple[str, int], SessionAdapter] = {}
@@ -184,6 +216,7 @@ class Hub:
         self._registration_lock = asyncio.Lock()
 
         self._ttl_sweeper: _IntervalSweeper | None = None
+        self._expectation_sweeper: _IntervalSweeper | None = None
         self._closed = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
@@ -196,24 +229,39 @@ class Hub:
         auth: AuthRegistry | None = None,
         clock: Callable[[], str] | None = None,
         ttl_sweep_interval: float = 30.0,
+        expectation_sweep_interval: float = 10.0,
         invite_ack_timeout: float = 30.0,
         register_default_adapters: bool = True,
     ) -> "Hub":
         """Construct + hydrate from disk + start sweepers. Production entry point.
 
-        ``register_default_adapters=True`` (default) registers
-        ``ConsultingAdapter()`` for ``consulting@v1`` so simple test
-        setups don't need an explicit registration call.
+        ``register_default_adapters=True`` (default) registers the
+        built-in adapters (``consulting@v1``, ``conversation@v1``,
+        ``discussion@v1``) and the M3 expectation evaluators / violation
+        handlers (``acks_within`` / ``reply_within`` / ``max_silence``,
+        ``audit`` / ``notify_session`` / ``auto_close``) so simple test
+        setups don't need explicit registration calls.
+
+        Set ``expectation_sweep_interval=0`` to disable the expectation
+        sweeper entirely (tests usually do this to avoid background
+        timer noise).
         """
         hub = cls(
             store,
             auth=auth,
             clock=clock,
             ttl_sweep_interval=ttl_sweep_interval,
+            expectation_sweep_interval=expectation_sweep_interval,
             invite_ack_timeout=invite_ack_timeout,
         )
         if register_default_adapters:
             hub.register_adapter(ConsultingAdapter())
+            hub.register_adapter(ConversationAdapter())
+            hub.register_adapter(DiscussionAdapter())
+            for evaluator in default_evaluators():
+                hub.register_expectation_evaluator(evaluator)
+            for handler in default_handlers():
+                hub.register_violation_handler(handler)
         await hub.hydrate()
         await hub.start()
         return hub
@@ -230,6 +278,7 @@ class Hub:
         self._rules.clear()
         self._skills.clear()
         self._name_to_id.clear()
+        self._capability_index.clear()
         self._sessions.clear()
         self._active_sessions.clear()
         self._adapter_states.clear()
@@ -243,6 +292,14 @@ class Hub:
                 continue
             agent_id = child.rstrip("/")
             await self._load_agent(agent_id)
+
+        # Rebuild capability index from loaded resumes — by_capability.json
+        # is a derived cache, the resumes are the authoritative source.
+        for agent_id, resume in self._resumes.items():
+            for cap in resume.claimed_capabilities:
+                self._capability_index.setdefault(cap, set()).add(agent_id)
+            for cap in resume.observed:
+                self._capability_index.setdefault(cap, set()).add(agent_id)
 
         # Sessions — load metadata first, then re-fold WALs.
         session_children = await self._store.list(sessions_root())
@@ -261,7 +318,11 @@ class Hub:
             await self._load_task(task_id)
 
     async def start(self) -> None:
-        """Spawn the TTL sweeper. Idempotent. ``ttl_sweep_interval=0`` disables."""
+        """Spawn the TTL + expectation sweepers. Idempotent.
+
+        ``ttl_sweep_interval=0`` disables the TTL sweeper;
+        ``expectation_sweep_interval=0`` disables the expectation sweeper.
+        """
         if self._ttl_sweep_interval > 0 and self._ttl_sweeper is None:
             self._ttl_sweeper = _IntervalSweeper(
                 name="ttl",
@@ -269,6 +330,13 @@ class Hub:
                 fn=self.expire_due,
             )
             self._ttl_sweeper.start()
+        if self._expectation_sweep_interval > 0 and self._expectation_sweeper is None:
+            self._expectation_sweeper = _IntervalSweeper(
+                name="expectations",
+                interval=self._expectation_sweep_interval,
+                fn=self._expectation_tick,
+            )
+            self._expectation_sweeper.start()
 
     async def close(self) -> None:
         """Cancel sweepers + endpoint tasks; drain queues. Idempotent."""
@@ -278,6 +346,9 @@ class Hub:
         if self._ttl_sweeper is not None:
             await self._ttl_sweeper.stop()
             self._ttl_sweeper = None
+        if self._expectation_sweeper is not None:
+            await self._expectation_sweeper.stop()
+            self._expectation_sweeper = None
         for task in list(self._endpoint_tasks):
             task.cancel()
         if self._endpoint_tasks:
@@ -309,6 +380,73 @@ class Hub:
                 f"no adapter registered for {manifest_type!r}@v{manifest_version}"
             )
         return adapter
+
+    # ── Expectation registry (M3) ───────────────────────────────────────────
+
+    def register_expectation_evaluator(self, evaluator: ExpectationEvaluator) -> None:
+        """Register an evaluator keyed by ``evaluator.name``.
+
+        Re-registering the same name replaces the prior evaluator.
+        """
+        self._expectation_evaluators[evaluator.name] = evaluator
+
+    def register_violation_handler(self, handler: ViolationHandler) -> None:
+        """Register a violation handler keyed by ``handler.name``.
+
+        Re-registering the same name replaces the prior handler.
+        """
+        self._violation_handlers[handler.name] = handler
+
+    async def _expectation_tick(self) -> None:
+        """One sweeper tick: evaluate every expectation on every active
+        session; fire registered handlers on new violations.
+
+        Per-(session, expectation, violator) dedup lives in
+        ``_fired_violations`` so handlers don't re-fire on every tick.
+        Cleared on terminal session transitions.
+        """
+        if not self._expectation_evaluators or not self._violation_handlers:
+            return
+        now_iso = self._clock()
+        now_seconds = datetime.fromisoformat(now_iso).timestamp()
+        for session_id, metadata in list(self._active_sessions.items()):
+            adapter_state = self._adapter_states.get(session_id)
+            wal = await self.read_wal(session_id)
+            context = ExpectationContext(
+                metadata=metadata,
+                state=adapter_state,
+                wal=wal,
+                now_iso=now_iso,
+                now_seconds=now_seconds,
+            )
+            for expectation in metadata.manifest.expectations:
+                evaluator = self._expectation_evaluators.get(expectation.name)
+                if evaluator is None:
+                    continue
+                violation = evaluator.evaluate(expectation, context)
+                if violation is None:
+                    continue
+                handler = self._violation_handlers.get(expectation.on_violation)
+                if handler is None:
+                    continue
+                fired = self._fired_violations.setdefault(session_id, set())
+                violator_keys = violation.violator_ids or [""]
+                for vid in violator_keys:
+                    key = (expectation.name, vid)
+                    if key in fired:
+                        continue
+                    fired.add(key)
+                    try:
+                        await handler.handle(self, session_id, violation)
+                    except Exception:
+                        # Sweeper must survive handler exceptions — they
+                        # leave the violation marked as fired so we don't
+                        # spin on a bad handler.
+                        pass
+                    if expectation.on_violation == "auto_close":
+                        # Session is terminal — no further violations on
+                        # this session are meaningful this tick.
+                        return
 
     # ── Registration (M1) ───────────────────────────────────────────────────
 
@@ -343,6 +481,18 @@ class Hub:
                 self._skills[agent_id] = skill_md
             self._name_to_id[passport.name] = agent_id
 
+            for cap in resume.claimed_capabilities:
+                self._capability_index.setdefault(cap, set()).add(agent_id)
+            for cap in resume.observed:
+                self._capability_index.setdefault(cap, set()).add(agent_id)
+
+        await self._persist_capability_index()
+        await self._audit_log.append({
+            "at": self._clock(),
+            "kind": AUDIT_KIND_AGENT_REGISTERED,
+            "agent_id": agent_id,
+            "name": passport.name,
+        })
         return passport
 
     async def unregister(self, agent_id: str) -> None:
@@ -364,6 +514,24 @@ class Hub:
                     bound.discard(agent_id)
                     if not bound:
                         self._endpoint_to_agents.pop(endpoint_id, None)
+
+            # Drop the agent from every capability bucket; clean empty
+            # buckets so the index stays compact.
+            empty_caps: list[str] = []
+            for cap, ids in self._capability_index.items():
+                ids.discard(agent_id)
+                if not ids:
+                    empty_caps.append(cap)
+            for cap in empty_caps:
+                self._capability_index.pop(cap, None)
+
+        await self._persist_capability_index()
+        await self._audit_log.append({
+            "at": self._clock(),
+            "kind": AUDIT_KIND_AGENT_UNREGISTERED,
+            "agent_id": agent_id,
+            "name": passport.name if passport is not None else None,
+        })
 
     # ── Discovery (read-side) ────────────────────────────────────────────────
 
@@ -432,6 +600,12 @@ class Hub:
         )
         await self._persist_resume(agent_id, resume)
         self._resumes[agent_id] = resume
+        await self._audit_log.append({
+            "at": self._clock(),
+            "kind": AUDIT_KIND_RESUME_SET,
+            "agent_id": agent_id,
+            "version": resume.version,
+        })
 
     async def set_skill(self, agent_id: str, skill_md: str | None) -> None:
         if agent_id not in self._passports:
@@ -442,6 +616,12 @@ class Hub:
         else:
             await self._persist_skill(agent_id, skill_md)
             self._skills[agent_id] = skill_md
+        await self._audit_log.append({
+            "at": self._clock(),
+            "kind": AUDIT_KIND_SKILL_SET,
+            "agent_id": agent_id,
+            "removed": skill_md is None,
+        })
 
     async def set_rule(self, agent_id: str, rule: Rule) -> None:
         if agent_id not in self._passports:
@@ -451,6 +631,61 @@ class Hub:
         )
         await self._persist_rule(agent_id, rule)
         self._rules[agent_id] = rule
+        await self._audit_log.append({
+            "at": self._clock(),
+            "kind": AUDIT_KIND_RULE_SET,
+            "agent_id": agent_id,
+            "version": rule.version,
+        })
+
+    async def record_observation(
+        self,
+        *,
+        owner_id: str,
+        capability: str,
+        outcome: TaskState,
+        latency_ms: int | None = None,
+    ) -> None:
+        """Update ``Resume.observed[capability]`` from a terminal task event.
+
+        Called by ``TaskMirror`` when an owner's task ends with a
+        ``capability`` tag set on its ``TaskSpec``. Updates the
+        capability index so the agent appears under that capability
+        even if it wasn't in their original ``claimed_capabilities``.
+
+        Outcome must be one of the terminal task states
+        (``COMPLETED`` / ``FAILED`` / ``EXPIRED``); other states are
+        ignored. ``latency_ms``, when provided, replaces the prior
+        ``p50_latency_ms`` (full reservoir sampling is Phase 2).
+        """
+        if outcome not in TERMINAL_TASK_STATES:
+            return
+        resume = self._resumes.get(owner_id)
+        if resume is None:
+            return
+        stat = resume.observed.get(capability) or ObservedStat()
+        stat.n += 1
+        if outcome == TaskState.COMPLETED:
+            stat.completed += 1
+        elif outcome == TaskState.FAILED:
+            stat.failed += 1
+        elif outcome == TaskState.EXPIRED:
+            stat.expired += 1
+        if latency_ms is not None:
+            stat.p50_latency_ms = latency_ms
+        resume.observed[capability] = stat
+        resume.last_updated = self._clock()
+        resume.version += 1
+        await self._persist_resume(owner_id, resume)
+
+        bucket = self._capability_index.setdefault(capability, set())
+        if owner_id not in bucket:
+            bucket.add(owner_id)
+            await self._persist_capability_index()
+
+    def agents_with_capability(self, capability: str) -> list[str]:
+        """Return agent_ids matching ``capability`` (claimed or observed)."""
+        return sorted(self._capability_index.get(capability, set()))
 
     # ── Sessions ────────────────────────────────────────────────────────────
 
@@ -979,11 +1214,24 @@ class Hub:
                 if task_meta is not None and task_meta.state not in TERMINAL_TASK_STATES:
                     await self._transition_task(task_id, TaskState.EXPIRED, "session_closed")
 
+        was_pending = metadata.state == SessionState.PENDING
         metadata.state = new_state
         metadata.close_reason = reason
         if is_terminal_session_state(new_state):
             metadata.closed_at = self._clock()
             self._active_sessions.pop(session_id, None)
+            self._fired_violations.pop(session_id, None)
+            # Release any pending create_session waiter so callers
+            # don't hang until invite_ack_timeout when the sweeper /
+            # auto_close handler closes a PENDING session out-of-band.
+            if was_pending:
+                waiter = self._session_open_waiters.get(session_id)
+                if waiter is not None and not waiter.done():
+                    waiter.set_exception(
+                        ProtocolError(
+                            f"session {session_id!r} closed during handshake: {reason}"
+                        )
+                    )
 
         await self._persist_session_metadata(metadata)
 
@@ -1034,6 +1282,11 @@ class Hub:
 
     async def _persist_skill(self, agent_id: str, skill_md: str) -> None:
         await self._store.write(skill_path(agent_id), skill_md)
+
+    async def _persist_capability_index(self) -> None:
+        # Sorted lists for deterministic JSON output.
+        snapshot = {cap: sorted(ids) for cap, ids in self._capability_index.items()}
+        await self._store.write(by_capability_path(), json.dumps(snapshot, sort_keys=True))
 
     async def _persist_session_metadata(self, metadata: SessionMetadata) -> None:
         await self._store.write(

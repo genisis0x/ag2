@@ -615,6 +615,7 @@ class Agent(Generic[TResult]):
         *,
         description: str = "",
         payload: dict[str, Any] | None = None,
+        capability: str | None = None,
         ttl_seconds: int | None = None,
         context: Context | None = None,
     ) -> Task:
@@ -629,11 +630,17 @@ class Agent(Generic[TResult]):
         Inside the ``async with`` block, ``ag2.task`` is stamped into
         ``context.dependencies`` so any tool annotated with ``TaskInject``
         resolves to this Task.
+
+        ``capability`` tags the task with a capability name. When the
+        agent is registered with the network, the ``TaskMirror`` calls
+        ``Hub.record_observation`` on the terminal event so the matching
+        ``Resume.observed[capability]`` track record updates.
         """
         spec = TaskSpec(
             title=title,
             description=description,
             payload=dict(payload) if payload else {},
+            capability=capability,
         )
         return Task(
             owner_id=self.name,

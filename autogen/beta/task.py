@@ -59,11 +59,20 @@ TERMINAL_TASK_STATES: frozenset[TaskState] = frozenset({
 
 @dataclass(slots=True)
 class TaskSpec:
-    """What a ``Task`` is doing — title plus optional description and payload."""
+    """What a ``Task`` is doing — title plus optional description and payload.
+
+    ``capability`` tags the task with a capability name from the
+    owning agent's ``Resume.claimed_capabilities``. When set, the
+    network's ``TaskMirror`` calls ``Hub.record_observation`` on the
+    terminal event so the matching ``Resume.observed[capability]``
+    track record is updated. Untagged tasks are still observed but
+    don't update any ``observed`` stat.
+    """
 
     title: str
     description: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
+    capability: str | None = None
 
 
 @dataclass(slots=True)

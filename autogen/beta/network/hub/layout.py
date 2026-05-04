@@ -126,6 +126,11 @@ def task_events_path(task_id: str) -> str:
 # ── Audit ────────────────────────────────────────────────────────────────────
 
 
-def audit_path(date_yyyy_mm_dd: str) -> str:
-    """Daily-rotated audit log path. Date string in ``YYYY-MM-DD`` form."""
-    return f"/audit/{date_yyyy_mm_dd}.jsonl"
+def audit_path() -> str:
+    """Single append-only audit log.
+
+    V1 writes every audit record to one file indefinitely (per
+    ``design/PLAN.md`` non-goals: rotation deferred to Phase 2). The
+    Phase 2 daily-rotated variant will accept a date parameter.
+    """
+    return "/audit/audit.jsonl"

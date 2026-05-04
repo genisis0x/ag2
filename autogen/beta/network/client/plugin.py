@@ -21,7 +21,14 @@ from autogen.beta.agent import Plugin
 from autogen.beta.assembly import AssemblyPolicy
 from autogen.beta.events import BaseEvent
 
-from .tools import make_delegate_tool, make_say_tool
+from .tools import (
+    make_context_tool,
+    make_delegate_tool,
+    make_peers_tool,
+    make_say_tool,
+    make_sessions_tool,
+    make_tasks_tool,
+)
 
 if TYPE_CHECKING:
     from autogen.beta.agent import Agent
@@ -55,7 +62,7 @@ class NetworkContextPolicy:
         prefix = (
             f"You are {self._client.passport.name} "
             f"(agent_id: {self._client.agent_id}).\n"
-            "Network tools available: say, delegate."
+            "Network tools: say, delegate, peers, sessions, tasks, context."
         )
         return [prefix, *prompts], events
 
@@ -74,6 +81,10 @@ class NetworkPlugin(Plugin):
             tools=[
                 make_say_tool(client),
                 make_delegate_tool(client),
+                make_peers_tool(client),
+                make_sessions_tool(client),
+                make_tasks_tool(client),
+                make_context_tool(client),
             ],
         )
         self._client = client

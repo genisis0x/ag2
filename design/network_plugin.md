@@ -142,6 +142,14 @@ Annotated[Session | None, Inject("ag2.network.session", default=None)]
 Annotated[Task | None,    Inject("ag2.task",            default=None)]
 ```
 
+**Important — type vs default:** the parameter signature is
+``session: SessionInject = None`` (default ``None``), **not**
+``session: SessionInject | None = None``. Wrapping the ``Annotated``
+in ``| None`` forms a ``Union`` that hides the ``Inject`` metadata
+from ``fast_depends``, which silently leaves the parameter unresolved.
+The ``default=None`` argument inside ``Inject(...)`` already handles
+the missing-from-deps case.
+
 ## The 6 LLM tools
 
 The surface is **2 flat + 4 grouped**, total 6 registered tools and ~14 distinct actions. Grouping follows the framework-core `_make_knowledge_tool` precedent (`autogen/beta/agent.py:1186`): single tool, action-dispatch body. The pattern keeps the LLM tool list short while exposing more capability per tool.
@@ -371,6 +379,23 @@ def make_peers_tool(client: AgentClient) -> Tool:
 ```
 
 Closures capture `client` once at registration time, so the FunctionTool definition is stable across turns — matches the framework-core "no nested functions in runtime execution paths" rule (decorators are exempt).
+
+## Workflow handoff tools
+
+When an `Agent` participates in a `workflow` session, the plugin can materialize one extra LLM tool per `ToolCalled` transition in the session's `TransitionGraph`. Each tool, when invoked by the LLM, posts an `ag2.handoff` envelope into the session; the `WorkflowAdapter` reads it and advances `expected_next_speaker`. See [workflow.md](workflow.md) for the full mechanism.
+
+```python
+# autogen/beta/network/client/tools/handoff.py
+
+def register_workflow(client: AgentClient, graph: TransitionGraph) -> None:
+    """Materialize one LLM tool per ToolCalled transition in `graph`.
+
+    Tools are added to the agent's tool list at session-open time and
+    removed at session-close. Tool names match `ToolCalled.tool_name`.
+    """
+```
+
+The handoff tool surface is per-session: agents only see the handoffs that exist in the workflows they're currently in. Outside an active workflow session, the tools are absent.
 
 ## What's not on the LLM surface
 

@@ -66,6 +66,7 @@ V1 ships a fixed set of stable event-type names. New names are added in code, no
 | Constant | Value | Purpose |
 |---|---|---|
 | `EV_TEXT` | `ag2.msg.text` | User-content text envelope |
+| `EV_HANDOFF` | `ag2.handoff` | Tool-driven workflow transition signal; `event_data["tool"]` names the handoff tool. Read by `WorkflowAdapter`'s `ToolCalled` condition (see [workflow.md](workflow.md)). Adapter-agnostic — any future adapter that wants tool-driven transitions reads it the same way. |
 | `EV_SESSION_INVITE` | `ag2.session.invite` | Hub → recipient on session create |
 | `EV_SESSION_INVITE_ACK` | `ag2.session.invite.ack` | Recipient → hub |
 | `EV_SESSION_INVITE_REJECT` | `ag2.session.invite.reject` | Recipient → hub |

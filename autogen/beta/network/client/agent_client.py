@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 from autogen.beta.agent import Agent
 
 from ..envelope import Envelope
-from ..identity import Passport, Resume
+from ..identity import Passport, Resume, ResumeExample
 from ..rule import Rule
 from .handlers import default_handler
 from .session import Session
@@ -233,7 +233,19 @@ class AgentClient:
 
     async def set_resume(self, resume: Resume) -> None:
         await self._hub.set_resume(self.agent_id, resume)
-        self._resume = resume
+        # Refresh local cache so subsequent reads see the bumped version.
+        self._resume = await self._hub.get_resume(self.agent_id)
+
+    async def add_example(self, example: ResumeExample) -> None:
+        """Append a ``ResumeExample`` to this agent's resume.
+
+        Fetches the latest resume from the hub first so concurrent
+        ``set_resume`` / ``record_observation`` updates don't get
+        clobbered.
+        """
+        current = await self._hub.get_resume(self.agent_id)
+        current.examples.append(example)
+        await self.set_resume(current)
 
     async def set_skill(self, skill_md: str | None) -> None:
         await self._hub.set_skill(self.agent_id, skill_md)

@@ -10,18 +10,33 @@ from the WAL. The hub caches the latest state per session in memory
 and reconstructs it from disk on ``hydrate()`` by re-folding —
 ``validate_send`` and ``on_accepted`` are O(1), not O(WAL).
 
-M2 ships ``ConsultingAdapter`` only. ``ConversationAdapter`` and
-``DiscussionAdapter`` arrive in M3.
+M2 shipped ``ConsultingAdapter``. M3 adds ``ConversationAdapter``
+(cut 3.1) and ``DiscussionAdapter`` (cut 3.2). ``WorkflowAdapter``
+arrives in M4 (see ``design/workflow.md``).
 """
 
 from .base import AdapterResult, AdapterState, SessionAdapter
 from .consulting import CONSULTING_TYPE, ConsultingAdapter, ConsultingState
+from .conversation import CONVERSATION_TYPE, ConversationAdapter, ConversationState
+from .discussion import (
+    DISCUSSION_TYPE,
+    ORDERING_ROUND_ROBIN,
+    DiscussionAdapter,
+    DiscussionState,
+)
 
 __all__ = (
     "CONSULTING_TYPE",
+    "CONVERSATION_TYPE",
+    "DISCUSSION_TYPE",
+    "ORDERING_ROUND_ROBIN",
     "AdapterResult",
     "AdapterState",
     "ConsultingAdapter",
     "ConsultingState",
+    "ConversationAdapter",
+    "ConversationState",
+    "DiscussionAdapter",
+    "DiscussionState",
     "SessionAdapter",
 )

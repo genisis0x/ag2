@@ -25,7 +25,7 @@ from autogen.beta.events import (
     TaskProgress,
     TaskStarted,
 )
-from autogen.beta.task import TaskMetadata, TaskSpec, TaskState
+from autogen.beta.task import TERMINAL_TASK_STATES, TaskMetadata, TaskSpec, TaskState
 
 from .errors import NotFoundError
 
@@ -122,6 +122,7 @@ class TaskMirror:
             pass
         except Exception:
             pass
+        await self._record_observation_if_tagged(event.task_id, TaskState.COMPLETED)
 
     async def _on_failed(self, event: TaskFailed) -> None:
         try:
@@ -134,11 +135,42 @@ class TaskMirror:
             pass
         except Exception:
             pass
+        await self._record_observation_if_tagged(event.task_id, TaskState.FAILED)
 
     async def _on_expired(self, event: TaskExpired) -> None:
         try:
             await self._hub.update_task(event.task_id, state=TaskState.EXPIRED)
         except NotFoundError:
             pass
+        except Exception:
+            pass
+        await self._record_observation_if_tagged(event.task_id, TaskState.EXPIRED)
+
+    async def _record_observation_if_tagged(
+        self, task_id: str, outcome: TaskState
+    ) -> None:
+        """If the task's spec carried a ``capability`` tag, push the
+        observation through to ``Hub.record_observation`` so the
+        owner's ``Resume.observed`` updates."""
+        if outcome not in TERMINAL_TASK_STATES:
+            return
+        task_meta = self._hub._tasks.get(task_id)
+        if task_meta is None or task_meta.spec.capability is None:
+            return
+        latency_ms: int | None = None
+        if task_meta.started_at:
+            try:
+                started = datetime.fromisoformat(task_meta.started_at).timestamp()
+                now = datetime.fromisoformat(self._hub._clock()).timestamp()
+                latency_ms = int(max(0.0, now - started) * 1000)
+            except Exception:
+                latency_ms = None
+        try:
+            await self._hub.record_observation(
+                owner_id=task_meta.owner_id,
+                capability=task_meta.spec.capability,
+                outcome=outcome,
+                latency_ms=latency_ms,
+            )
         except Exception:
             pass

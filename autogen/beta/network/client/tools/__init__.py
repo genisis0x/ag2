@@ -4,11 +4,31 @@
 
 """LLM-facing tools attached by ``NetworkPlugin``.
 
-V1 (M2) ships ``say`` and ``delegate``. The 4 grouped tools (``peers``,
-``sessions``, ``tasks``, ``context``) arrive in M3.
+V1 surface (M2 + M3): 2 flat + 4 grouped tools.
+
+Flat (hot path):
+* ``say`` — post into a session.
+* ``delegate`` — one-shot consult.
+
+Grouped (action-dispatch):
+* ``peers``    — find / describe peers.
+* ``sessions`` — list / open / info / close.
+* ``tasks``    — progress / complete (active) + list / status / wait.
+* ``context``  — search / quote past content.
 """
 
+from .context import make_context_tool
 from .delegate import make_delegate_tool
+from .peers import make_peers_tool
 from .say import make_say_tool
+from .sessions import make_sessions_tool
+from .tasks import make_tasks_tool
 
-__all__ = ("make_delegate_tool", "make_say_tool")
+__all__ = (
+    "make_context_tool",
+    "make_delegate_tool",
+    "make_peers_tool",
+    "make_say_tool",
+    "make_sessions_tool",
+    "make_tasks_tool",
+)

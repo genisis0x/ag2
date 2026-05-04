@@ -14,6 +14,6 @@ Phase 2.
 """
 
 from .base import ViewPolicy
-from .builtin import FullTranscript
+from .builtin import FullTranscript, WindowedSummary
 
-__all__ = ("FullTranscript", "ViewPolicy")
+__all__ = ("FullTranscript", "ViewPolicy", "WindowedSummary")

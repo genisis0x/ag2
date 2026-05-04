@@ -5,7 +5,7 @@
 ## Goals (V1)
 
 - Agent registry with three-part identity: **`Passport`** (immutable id + billing) + **`Resume`** (mutable claims + observed track record) + optional **`SKILL.md`** (Anthropic-format LLM-facing usage doc). Discovery returns different slices for `find` vs `describe`.
-- Three built-in session types (`consulting`, `conversation`, `discussion`) plus an extensible `SessionAdapter` Protocol
+- Four built-in session types (`consulting`, `conversation`, `discussion`, `workflow`) plus an extensible `SessionAdapter` Protocol — `workflow` carries declarative `Transition` graphs for orchestrated flows (see [workflow.md](workflow.md))
 - `SessionManifest.expectations` — declarative protocol-shape contracts the hub enforces with passive `on_violation` handlers
 - Per-tenant rules: `access` + `limits` (transforms deferred to Phase 3); failure-mode thresholds (`peer_heartbeat_timeout`, `task_stall_threshold`, `session_idle_threshold`)
 - **Task as a framework-core primitive** (`autogen/beta/task.py`) — any Agent can wrap work in a trackable lifecycle, with or without a hub. The network is one observer.
@@ -42,7 +42,7 @@ Everything in this list is an AG2 Cloud or later-phase concern. Framework-core V
 
 ## Core principles
 
-1. **Sessions are protocols, not flat channels.** Every Agent-to-Agent exchange happens inside a `Session` with a defined type and adapter. Adapters define the choreography; participants follow it. No central orchestrator.
+1. **Sessions are protocols, not flat channels.** Every Agent-to-Agent exchange happens inside a `Session` with a defined type and adapter. Adapters define the choreography (or orchestration, in `workflow`'s case); participants follow it. The hub is never the orchestrator — orchestration logic lives in the adapter's pure `on_accepted` method, derived from folded state.
 
 2. **Adapters are stateless.** Every decision derives from session metadata plus a per-session `AdapterState` folded from the WAL. The hub `hydrate()`s state from disk on restart by re-folding. `validate_send` and `on_accepted` are O(1), not O(WAL).
 
@@ -126,6 +126,10 @@ autogen/beta/network/
 │                                     Participant, ParticipantRole, SessionState
 ├── rule.py                           Rule, AccessBlock, LimitsBlock,
 │                                     SessionTypeAccess, RateBlock, InboxBlock
+├── transitions.py                    Transition, TransitionTarget Protocol + 5 V1
+│                                     concretes, TransitionCondition Protocol + 3
+│                                     V1 concretes, TransitionGraph (+ dumps/loads
+│                                     and named registries)
 ├── task_mirror.py                    Bridges agent's Task* events to hub
 ├── auth.py                           AuthAdapter, NoAuth, AuthRegistry
 ├── adapters/
@@ -133,7 +137,8 @@ autogen/beta/network/
 │   ├── base.py                       SessionAdapter Protocol, AdapterState, AdapterResult
 │   ├── consulting.py
 │   ├── conversation.py
-│   └── discussion.py
+│   ├── discussion.py
+│   └── workflow.py                   WorkflowAdapter, WorkflowState (M4)
 ├── views/
 │   ├── __init__.py
 │   ├── base.py                       ViewPolicy Protocol
@@ -168,7 +173,9 @@ autogen/beta/network/
 │       ├── peers.py
 │       ├── sessions.py
 │       ├── tasks.py
-│       └── context.py
+│       ├── context.py
+│       └── handoff.py                Materializes one tool per ToolCalled
+│                                     transition in a workflow's graph (M4)
 └── policies.py                       qualified-key constants (SESSION_DEP, AGENT_CLIENT_DEP, HUB_DEP, TASK_DEP)
 ```
 
@@ -176,7 +183,7 @@ autogen/beta/network/
 
 ### Phase 1 — In-process foundation
 
-Goal: minimum end-to-end with every load-bearing contract in place, tested against `LocalLink` only. Phase 1 lands as **three sequential milestones** (M1 → M2 → M3), each independently mergeable to `main` because `autogen.beta.network` is opt-in by import path. No milestone rewrites earlier work — every milestone is strictly additive.
+Goal: minimum end-to-end with every load-bearing contract in place, tested against `LocalLink` only. Phase 1 lands as **four sequential milestones** (M1 → M2 → M3 → M4), each independently mergeable to `main` because `autogen.beta.network` is opt-in by import path. No milestone rewrites earlier work — every milestone is strictly additive. M1–M3 deliver the choreography surface; M4 layers orchestrated workflows on top as the migration path for AG2-classic's `GroupChat` / `Handoffs` / `AfterWork`.
 
 | Milestone | Status | Tests |
 |---|---|---|
@@ -184,6 +191,7 @@ Goal: minimum end-to-end with every load-bearing contract in place, tested again
 | M1 — Foundation | ✅ shipped (`99d9e6da82`) | 5 integration tests |
 | M2 — Consulting loop | ✅ shipped (this PR) | 8 integration tests |
 | M3 — Multi-party + observability | ⏳ pending | — |
+| M4 — Workflow orchestration | ⏳ pending | — |
 
 Beta suite total: **1509 passing**, zero regressions across milestones.
 
@@ -256,6 +264,20 @@ Full V1 surface.
 
 Exit: appendix's 5-way `discussion` runs end-to-end with bounded prompt size. An LLM-driven Agent calls `peers(action="find", sort_by="track_record")` → `peers(action="describe")` (reads target's SKILL.md verbatim) → `delegate(payload=, capability=)` → `context(action="search")` → `say` → `sessions(action="close")`. The hub records `Resume.observed[capability]` on the terminal task event.
 
+#### M4 — Workflow orchestration ⏳ (pending, ~600 LOC)
+
+The orchestrator surface — successor for AG2-classic's `GroupChat` + `Handoffs` + `AfterWork`. Strictly additive on top of M3; no rewrites.
+
+- `transitions.py` — `Transition`, `TransitionTarget` Protocol + 5 V1 concretes (`AgentTarget`, `RoundRobinTarget`, `StayTarget`, `RevertToInitiatorTarget`, `TerminateTarget`), `TransitionCondition` Protocol + 3 V1 concretes (`Always`, `FromSpeaker`, `ToolCalled`), `TransitionGraph` with `dumps()` / `loads()` and named registries (`register_target`, `register_condition`)
+- `adapters/workflow.py` — `WorkflowAdapter`, `WorkflowState`. Stateless and pure; reuses the existing dispatch path with no hub changes
+- `client/tools/handoff.py` — `NetworkPlugin.register_workflow(graph)` materializes one LLM tool per `ToolCalled` transition; emits `ag2.handoff` envelopes the adapter reads in `fold`
+- `EV_HANDOFF` (`ag2.handoff`) added to envelope's stable event-type set
+- 4 integration tests: round-robin via `WorkflowAdapter`, sequential pipeline, swarm with tool-driven handoffs + revert-to-initiator, manager-as-initiator (auto-pattern equivalent). Each test exercises `Hub.hydrate()` re-folding the WAL through the workflow adapter and recovering `expected_next_speaker`
+
+Exit: a 3-agent swarm runs end-to-end via tool-driven handoffs. Triage agent calls `transfer_to_eng(reason)` → eng agent replies → `RevertToInitiatorTarget` brings control back to triage → triage closes via `TerminateTarget`. Workflow state survives `Hub.hydrate()` mid-flow.
+
+See [workflow.md](workflow.md) for the full design.
+
 ### Phase 2 — Multi-participant power features
 
 - `TaskState.CANCELLED` + `task.cancel(reason)` + `EV_TASK_CANCELLED` + `ag2.task.cancel_request` envelope
@@ -275,6 +297,7 @@ Exit: appendix's 5-way `discussion` runs end-to-end with bounded prompt size. An
 - `network_changed` push + cache invalidation in `NetworkContextPolicy`
 - `inbox_pressure` backpressure events
 - Adapter state cache benchmark regression suite
+- Workflow extensions: `RandomTarget`, `LLMSelectorTarget` (async sub-session resolution), `NestedSessionTarget` (SocietyOfMind), `ContextExpr` and `TurnCountReached` conditions, `SubGraph` composition target, saga / `OnFailure` transitions, `dispatch_audience` adapter hook (per-recipient routing optimization), classic `Pattern` → `WorkflowGraph` migration helper
 
 ### Phase 3 — Cross-process
 
@@ -299,6 +322,7 @@ Read in this order on first pass; the docs are otherwise standalone.
 - [identity.md](identity.md) — `Passport`, `Resume`, `SKILL.md`, `AuthBlock`, registration, `NoAuth` / `ApiKeyAuth`
 - [envelope.md](envelope.md) — `Envelope`, event types, `audience` addressing
 - [sessions.md](sessions.md) — `SessionManifest`, `SessionAdapter`, V1 adapters
+- [workflow.md](workflow.md) — `WorkflowAdapter`, `Transition` vocabulary, orchestrated flows
 - [views.md](views.md) — `ViewPolicy`, V1 built-ins
 - [tasks.md](tasks.md) — Task as framework-core primitive; network as observer
 - [rules.md](rules.md) — Access + limits (V1; transforms Phase 3)

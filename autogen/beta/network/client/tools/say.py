@@ -38,8 +38,8 @@ def make_say_tool(client: "AgentClient") -> object:
         *,
         audience: list[str] | None = None,
         session_id: str | None = None,
-        session: SessionInject | None = None,
-        ag_client: AgentClientInject | None = None,
+        session: SessionInject = None,
+        ag_client: AgentClientInject = None,
     ) -> str:
         """Post a text envelope into the current (or specified) session.
 

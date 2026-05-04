@@ -21,9 +21,11 @@ from autogen.beta.agent import Plugin
 from autogen.beta.assembly import AssemblyPolicy
 from autogen.beta.events import BaseEvent
 
+from ..transitions import TransitionGraph
 from .tools import (
     make_context_tool,
     make_delegate_tool,
+    make_handoff_tools_for_graph,
     make_peers_tool,
     make_say_tool,
     make_sessions_tool,
@@ -98,6 +100,28 @@ class NetworkPlugin(Plugin):
         """
         super().register(agent)
         agent._policies.append(NetworkContextPolicy(self._client))
+
+    def register_workflow(self, graph: TransitionGraph) -> list[object]:
+        """Materialise one LLM tool per :class:`ToolCalled` transition
+        in ``graph`` and append them to the bound agent's ``tools``
+        list. Returns the new tool objects so callers can later remove
+        them if the workflow ends and the surface should be trimmed.
+
+        Tools are scoped per-agent, not per-session — if the agent
+        joins multiple workflows, call ``register_workflow`` once per
+        graph; the union of tools is fine because each tool emits an
+        ``ag2.handoff`` envelope on the *current* session, and
+        non-matching adapters fall through to ``default_target``.
+        """
+        new_tools = make_handoff_tools_for_graph(self._client, graph)
+        existing = {t.name for t in self._client.agent.tools}
+        attached: list[object] = []
+        for t in new_tools:
+            if t.name in existing:
+                continue
+            self._client.agent.tools.append(t)
+            attached.append(t)
+        return attached
 
 
 # Make ``NetworkPlugin`` satisfy ``AssemblyPolicy`` indirectly via its

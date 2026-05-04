@@ -38,6 +38,7 @@ __all__ = (
     "EV_TASK_RESULT",
     "EV_TASK_STALLED",
     "EV_TASK_STARTED",
+    "EV_HANDOFF",
     "EV_TEXT",
     "Envelope",
     "Priority",
@@ -54,6 +55,12 @@ Priority = Literal["background", "normal", "urgent"]
 # check in V1) — the framework only special-cases the names below.
 
 EV_TEXT = "ag2.msg.text"
+
+# Tool-driven workflow transition signal — see workflow.md. ``event_data``
+# carries ``{"tool": <tool_name>, "reason": <free-form>}``. Read by
+# ``WorkflowAdapter``'s ``ToolCalled`` condition. Adapter-agnostic — any
+# future adapter that wants tool-driven transitions reads it the same way.
+EV_HANDOFF = "ag2.handoff"
 
 EV_SESSION_INVITE = "ag2.session.invite"
 EV_SESSION_INVITE_ACK = "ag2.session.invite.ack"

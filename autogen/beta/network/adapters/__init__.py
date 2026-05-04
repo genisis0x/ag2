@@ -24,12 +24,14 @@ from .discussion import (
     DiscussionAdapter,
     DiscussionState,
 )
+from .workflow import WORKFLOW_TYPE, WorkflowAdapter, WorkflowState
 
 __all__ = (
     "CONSULTING_TYPE",
     "CONVERSATION_TYPE",
     "DISCUSSION_TYPE",
     "ORDERING_ROUND_ROBIN",
+    "WORKFLOW_TYPE",
     "AdapterResult",
     "AdapterState",
     "ConsultingAdapter",
@@ -39,4 +41,6 @@ __all__ = (
     "DiscussionAdapter",
     "DiscussionState",
     "SessionAdapter",
+    "WorkflowAdapter",
+    "WorkflowState",
 )

@@ -38,6 +38,7 @@ from ..adapters.base import SessionAdapter
 from ..adapters.consulting import ConsultingAdapter
 from ..adapters.conversation import ConversationAdapter
 from ..adapters.discussion import DiscussionAdapter
+from ..adapters.workflow import WorkflowAdapter
 from ..auth import AuthRegistry, default_registry
 from ..envelope import (
     EV_SESSION_CLOSED,
@@ -258,6 +259,7 @@ class Hub:
             hub.register_adapter(ConsultingAdapter())
             hub.register_adapter(ConversationAdapter())
             hub.register_adapter(DiscussionAdapter())
+            hub.register_adapter(WorkflowAdapter())
             for evaluator in default_evaluators():
                 hub.register_expectation_evaluator(evaluator)
             for handler in default_handlers():

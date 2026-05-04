@@ -189,11 +189,11 @@ Goal: minimum end-to-end with every load-bearing contract in place, tested again
 |---|---|---|
 | Framework-core precondition | ✅ shipped (`77622fac9e`) | 22 tests |
 | M1 — Foundation | ✅ shipped (`99d9e6da82`) | 5 integration tests |
-| M2 — Consulting loop | ✅ shipped (this PR) | 8 integration tests |
-| M3 — Multi-party + observability | ⏳ pending | — |
-| M4 — Workflow orchestration | ⏳ pending | — |
+| M2 — Consulting loop | ✅ shipped (`ee67cb258d`) | 8 integration tests |
+| M3 — Multi-party + observability | ✅ shipped (`5f667265f6`) | 62 integration + 2 anthropic smoke |
+| M4 — Workflow orchestration | ✅ shipped (this PR) | 26 integration + 1 anthropic smoke |
 
-Beta suite total: **1509 passing**, zero regressions across milestones.
+Beta suite total: **1596 passing**, zero regressions across milestones.
 
 **Framework-core precondition (separate PR; lands before M1):**
 - New `autogen/beta/task.py` — `Task`, `TaskSpec`, `TaskState`, `TaskMetadata`, `Agent.task(...)` entry point, `TaskInject` annotation
@@ -242,39 +242,43 @@ First end-to-end LLM-driven session.
 
 Exit: LLM-driven 1:1 consulting end-to-end. Alice registers, Bob registers, Alice's LLM calls `delegate(target="bob", prompt=..., blocking=True)`, Bob's notify handler runs Bob's LLM, Bob replies, consulting auto-closes via the adapter's `on_accepted`. Validated by `test/beta/network/test_m2_consulting.py` (8 tests).
 
-#### M3 — Multi-party + observability ⏳ (pending, ~1500 LOC)
+#### M3 — Multi-party + observability ✅ (shipped `5f667265f6`, ~5300 LOC)
 
-Full V1 surface.
+Full V1 surface. Landed as 5 internal cuts under one milestone commit.
 
-- `adapters/conversation.py`, `adapters/discussion.py` — `discussion` ships `round_robin` ordering only (`dynamic`/`static` deferred)
-- Multi-party handshake — **all-or-nothing only**: `pending_acks` tracked, session fails if any invitee rejects; N-of-M quorum logic deferred
-- `views/builtin.py` adds `WindowedSummary` (composes with framework-core `compact.py` `SummarizeCompact`)
-- `hub/expectations.py` — 3 evaluators: `acks_within`, `reply_within`, `max_silence`
-- 3 violation handlers: `audit`, `notify_session`, `auto_close`
-- `hub/sweepers.py` — adds `_ExpectationSweeper` (10s tick)
-- `hub/audit.py` — single append-only `audit.jsonl` (no rotation)
-- `task_mirror.py` extended — on terminal `Task*` event with `capability` tag, calls `Hub.record_observation` to update `Resume.observed`
-- Capability index (`registry/by_capability.json`) maintained on register/unregister and on `record_observation`
-- `client/skill_render.py` — SKILL.md frontmatter parser + fallback renderer
-- `client/tools/peers.py`, `client/tools/sessions.py`, `client/tools/tasks.py`, `client/tools/context.py` — 4 grouped tools
-- `AgentClient.set_resume` / `set_skill` / `add_example` / `set_rule` — tenant-driven mutation paths
-- Liveness + stall + idle events from the 3 expectations
-- `Hub.hydrate()` correctness test at scale (100 active sessions × 1000 envelopes)
-- Adapter state cache **O(1) benchmark** (deferred from M2; meaningful with `discussion` adapter at 1000-turn sessions)
+- **Cut 3.1** — `adapters/conversation.py` (1+1 bidirectional, no auto-close); `views/builtin.py` adds `WindowedSummary` with `CompactionSummary` head for bounded prompt size at any turn count.
+- **Cut 3.2** — `adapters/discussion.py` with `round_robin` ordering only (`dynamic`/`static` deferred); multi-party N-of-N handshake reuses M1's `pending_acks` machinery (any reject fails the session — N-of-M quorum is Phase 2).
+- **Cut 3.3** — `hub/expectations.py` ships 3 evaluators (`acks_within`, `reply_within`, `max_silence`) and 3 handlers (`audit`, `notify_session`, `auto_close`) on a `_ExpectationSweeper` (10s tick, configurable, 0 disables). Per-(session, expectation, violator) dedup in `_fired_violations`, cleared on terminal session transition. `hub/audit.py` ships a single append-only `audit.jsonl` recording register/unregister, set_resume/skill/rule, and every violation fire.
+- **Cut 3.4** — `Hub.record_observation` updates `Resume.observed[capability]` from terminal task events; `task_mirror.py` invokes it automatically when `TaskSpec.capability` is set; default notify handler attaches the mirror to every LLM turn so `agent.task(capability=)` is observed end-to-end. `registry/by_capability.json` maintained on register/unregister/observe and rebuilt from resumes on hydrate. `client/skill_render.py` parses SKILL.md frontmatter and renders a passport+resume fallback for `peers(action="describe")`. `AgentClient.set_resume` / `set_skill` / `set_rule` (M2) joined by `add_example`.
+- **Cut 3.5** — 4 grouped LLM tools: `client/tools/peers.py`, `client/tools/sessions.py`, `client/tools/tasks.py`, `client/tools/context.py`. Wired into `NetworkPlugin` so every registered Agent gets the full surface (2 flat + 4 grouped = 6 tools).
 
-Exit: appendix's 5-way `discussion` runs end-to-end with bounded prompt size. An LLM-driven Agent calls `peers(action="find", sort_by="track_record")` → `peers(action="describe")` (reads target's SKILL.md verbatim) → `delegate(payload=, capability=)` → `context(action="search")` → `say` → `sessions(action="close")`. The hub records `Resume.observed[capability]` on the terminal task event.
+**Design refinements during M3 (deviations and bug fixes):**
+- `_transition_session` now releases dangling `_session_open_waiters` futures when the sweeper auto-closes a `PENDING` session. Previously `create_session` would block on the waiter until `invite_ack_timeout` even after out-of-band closure (e.g. via the `acks_within(auto_close)` expectation).
+- `SessionInject | None = None` silently bypassed `fast_depends` injection — wrapping the `Annotated` in a `Union` hides the `Inject` metadata so the param was never resolved. Latent in M2's `say`/`delegate` (M2 tests went through `Agent.ask`, never through direct `tool(event, context)` dispatch). Pattern is now `session: SessionInject = None` (no Union); fixed in all 6 tools and documented in `network_plugin.md`.
+- `_ScriptedConfig` test helper added in `test/beta/network/_helpers.py` because `autogen.beta.testing.TestConfig` resets its iterator on every `create()`, so a single agent keeps replaying its first scripted reply across multiple turns. Multi-turn LLM-driven adapter tests need persistent scripts; this wrapper feeds one shared cursor across all clients it produces.
+- Hydrate scale test ships at 100 sessions × 100 envelopes (10k envelopes total, ~1.6s including the discussion variant) rather than the 100 × 1000 (100k envelopes, ~10s populate) called out in the original plan. Hydrate itself stays sub-second even at the larger scale; the constraint is populate write throughput, which is irrelevant to the correctness contract being tested. Bumping `ENVELOPES_PER_SESSION` in `test_m3_hydrate_scale.py` runs the full sweep locally.
+- Adapter state cache O(1) benchmark (deferred from M2) is **deferred again to Phase 2**'s perf-regression suite. The hydrate scale test exercises folding correctness; perf is a separate concern.
+- LLM-driven 5-way discussion exit criterion lives as an `@pytest.mark.anthropic` smoke test (`test/beta/providers/anthropic/test_network_smoke.py`) rather than a `TestConfig`-mocked integration test. Mocking 5 LLMs taking turns through tool calls is brittle; verifying against the real model is cheap (~$0.005 at haiku rates) and catches more.
 
-#### M4 — Workflow orchestration ⏳ (pending, ~600 LOC)
+Exit: ✅ Validated by 62 in-tree integration tests covering each cut + 2 anthropic smoke tests against real `claude-haiku-4-5`. The smoke suite proves the M3 exit criterion: alice's LLM autonomously calls `peers(action="find", capability="math")` → `delegate(target="bob", prompt=...)` → returns "204" for "12 × 17"; 5 LLM agents take round-robin turns via the `say` tool with all contributions landing in WAL in `[alice, bob, carol, dave, erin]` order.
+
+#### M4 — Workflow orchestration ✅ (shipped this PR, ~1400 LOC)
 
 The orchestrator surface — successor for AG2-classic's `GroupChat` + `Handoffs` + `AfterWork`. Strictly additive on top of M3; no rewrites.
 
-- `transitions.py` — `Transition`, `TransitionTarget` Protocol + 5 V1 concretes (`AgentTarget`, `RoundRobinTarget`, `StayTarget`, `RevertToInitiatorTarget`, `TerminateTarget`), `TransitionCondition` Protocol + 3 V1 concretes (`Always`, `FromSpeaker`, `ToolCalled`), `TransitionGraph` with `dumps()` / `loads()` and named registries (`register_target`, `register_condition`)
-- `adapters/workflow.py` — `WorkflowAdapter`, `WorkflowState`. Stateless and pure; reuses the existing dispatch path with no hub changes
-- `client/tools/handoff.py` — `NetworkPlugin.register_workflow(graph)` materializes one LLM tool per `ToolCalled` transition; emits `ag2.handoff` envelopes the adapter reads in `fold`
-- `EV_HANDOFF` (`ag2.handoff`) added to envelope's stable event-type set
-- 4 integration tests: round-robin via `WorkflowAdapter`, sequential pipeline, swarm with tool-driven handoffs + revert-to-initiator, manager-as-initiator (auto-pattern equivalent). Each test exercises `Hub.hydrate()` re-folding the WAL through the workflow adapter and recovering `expected_next_speaker`
+- `transitions.py` — `Transition`, `TransitionTarget` Protocol + 5 V1 concretes (`AgentTarget`, `RoundRobinTarget`, `StayTarget`, `RevertToInitiatorTarget`, `TerminateTarget`), `TransitionCondition` Protocol + 3 V1 concretes (`Always`, `FromSpeaker`, `ToolCalled`), `TransitionGraph` with `to_dict()` / `dumps()` / `loads()` and named registries (`register_target`, `register_condition`). Convenience factories `TransitionGraph.round_robin(...)` and `.sequence(...)` for the common patterns.
+- `adapters/workflow.py` — `WorkflowAdapter`, `WorkflowState`. Stateless and pure; reuses the existing dispatch path with no hub changes. `WorkflowState` snapshots `participant_order` + `creator_id` + `graph_data` at `initial_state` so `fold` (which has no metadata) can compute the next speaker on each accepted envelope.
+- `client/tools/handoff.py` — `make_handoff_tool(client, tool_name)` builds one LLM tool that posts `ag2.handoff`; `make_handoff_tools_for_graph(client, graph)` materializes one tool per unique `ToolCalled` transition. `NetworkPlugin.register_workflow(graph)` is the convenience wrapper that appends them to `agent.tools` (idempotent — repeat calls don't duplicate).
+- `EV_HANDOFF` (`ag2.handoff`) added to envelope's stable event-type set.
+- `client/handlers.py` — `default_handler` now treats `EV_HANDOFF` as a substantive turn-advancing envelope (alongside `EV_TEXT`). The next speaker's notify handler engages their LLM with the handoff's `reason` synthesised into `"[Handed off via <tool>] <reason>"`. Without this the workflow stalls after the handoff because the receiving agent's handler ignored the envelope.
 
-Exit: a 3-agent swarm runs end-to-end via tool-driven handoffs. Triage agent calls `transfer_to_eng(reason)` → eng agent replies → `RevertToInitiatorTarget` brings control back to triage → triage closes via `TerminateTarget`. Workflow state survives `Hub.hydrate()` mid-flow.
+**Design refinements during M4:**
+- `TransitionTarget.resolve` and `TransitionCondition.evaluate` deliberately take only `(state, envelope)` — no metadata. `WorkflowState` carries `participant_order` (for `RoundRobinTarget`) and `creator_id` (for `RevertToInitiatorTarget`) so transitions can be evaluated inside `WorkflowAdapter.fold`, which has no metadata access. Doc previously hinted at `(metadata, state, envelope)` — workflow.md will follow up.
+- Handoff tools are scoped per-agent (registered onto `agent.tools`) rather than per-session. If an agent joins multiple workflows, the union of tools is fine: each tool emits on the *current* session, and non-matching adapters fall through to `default_target`. Per-session scoping is Phase 2 once we have a clean reason to need it.
+- `WorkflowState.graph_data` stores the JSON-friendly `to_dict()` form. `fold` deserialises on each call (cheap; the graph is small and bounded). Caching the deserialised graph on the adapter would tie state to the adapter instance, which violates the stateless-adapter principle.
+- `WorkflowGraph.sequence(steps)` sets `max_turns=len(steps)` so the pipeline terminates cleanly after the last step posts. The exit criterion's "triage closes via TerminateTarget" is exercised in tests via `hub.close_session(...)` (deterministic) rather than waiting on the LLM to call `sessions(action="close")`.
+
+Exit: ✅ Validated by 26 in-tree integration tests in `test/beta/network/test_m4_workflow.py` (4 patterns + Hub.hydrate recovery + serialization round-trip + registry extension + handoff tool dispatch) and 1 anthropic smoke test in `test/beta/providers/anthropic/test_workflow_smoke.py` proving the full exit criterion against real `claude-haiku-4-5`: triage's LLM autonomously calls `transfer_to_eng` → eng's notify handler engages eng's LLM with the synthesised handoff prompt → eng's reply rotates control back to triage via `FromSpeaker(eng) → RevertToInitiatorTarget` → workflow state survives a mid-flow `Hub.hydrate()` → triage closes the session.
 
 See [workflow.md](workflow.md) for the full design.
 
@@ -348,7 +352,7 @@ These follow `CLAUDE.md` and apply to every module under `autogen/beta/network/`
 - Async throughout; sync-only helpers are `_private`.
 - Re-export rules: every public class is exported from its module's `__init__.py` and listed in `__all__`. Optional-dep imports use the `missing_optional_dependency` fallback per `CLAUDE.md`.
 
-Test file layout mirrors source: `test/beta/network/test_<module>.py`. Smoke tests against real providers under `smoke_tests/network/`.
+Test file layout mirrors source: `test/beta/network/test_<module>.py`. Smoke tests against real providers under `test/beta/providers/{anthropic,openai,gemini}/`, marked with the matching `@pytest.mark.{provider}` so they're excluded from default unit runs (which use `--ignore=test/beta/providers`).
 
 ## Appendix — End-to-end example
 

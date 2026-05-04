@@ -27,6 +27,7 @@ from autogen.beta.events import BaseEvent
 from autogen.beta.stream import MemoryStream
 
 from ..envelope import (
+    EV_HANDOFF,
     EV_SESSION_INVITE,
     EV_SESSION_INVITE_ACK,
     EV_TEXT,
@@ -112,14 +113,36 @@ async def _auto_ack_invite(envelope: Envelope, client: "AgentClient") -> None:
         pass
 
 
-async def _process_text(envelope: Envelope, client: "AgentClient") -> None:
-    """Run the agent's LLM on the inbound text and send its reply.
+def _extract_turn_text(envelope: Envelope) -> str:
+    """Pull the user-message body out of a substantive envelope.
 
-    Only engages the LLM when the adapter would accept a reply from
-    this agent right now — for consulting, that means we're the
-    respondent and haven't replied yet. After both turns the adapter
-    rejects further sends, so the initiator's notify of the
-    respondent's reply does NOT trigger a recursive LLM call.
+    ``EV_TEXT`` carries the text in ``event_data['text']``.
+    ``EV_HANDOFF`` carries the reason in ``event_data['reason']`` and
+    the tool name in ``event_data['tool']``; we synthesise a short
+    handoff prompt so the next speaker's LLM has context.
+    """
+    if envelope.event_type == EV_TEXT:
+        text = envelope.event_data.get("text", "")
+        return text if isinstance(text, str) else ""
+    if envelope.event_type == EV_HANDOFF:
+        tool = envelope.event_data.get("tool", "handoff")
+        reason = envelope.event_data.get("reason", "")
+        if reason:
+            return f"[Handed off via {tool}] {reason}"
+        return f"[Handed off via {tool}]"
+    return ""
+
+
+async def _process_text(envelope: Envelope, client: "AgentClient") -> None:
+    """Run the agent's LLM on the inbound substantive envelope and
+    send its reply.
+
+    Handles ``EV_TEXT`` and ``EV_HANDOFF``. Only engages the LLM when
+    the adapter would accept a reply from this agent right now — for
+    consulting, that means we're the respondent and haven't replied
+    yet; for workflow, that we're ``expected_next_speaker``. After
+    each turn the adapter rotates so this same handler firing for a
+    different participant's notify is a no-op via the probe.
     """
     metadata = await client._hub.get_session(envelope.session_id)
     if metadata.is_terminal() or metadata.state != SessionState.ACTIVE:
@@ -152,8 +175,8 @@ async def _process_text(envelope: Envelope, client: "AgentClient") -> None:
         session=metadata,
     )
 
-    current_text = envelope.event_data.get("text", "")
-    if not isinstance(current_text, str) or not current_text:
+    current_text = _extract_turn_text(envelope)
+    if not current_text:
         return
 
     # Pre-populate a fresh stream's history with the projection so the
@@ -200,10 +223,10 @@ async def default_handler(envelope: Envelope, client: "AgentClient") -> None:
     if event_type == EV_SESSION_INVITE:
         await _auto_ack_invite(envelope, client)
         return
-    if event_type == EV_TEXT:
+    if event_type in (EV_TEXT, EV_HANDOFF):
         await _process_text(envelope, client)
         return
     # Other ag2.session.* events (OPENED/CLOSED/EXPIRED) and ag2.task.*
-    # events: no LLM action in M2. Session state changes are reflected
-    # in the next ``Session.info()`` call; task events are mirrored by
+    # events: no LLM action. Session state changes are reflected in
+    # the next ``Session.info()`` call; task events are mirrored by
     # ``TaskMirror`` separately.

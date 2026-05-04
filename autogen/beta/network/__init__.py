@@ -43,6 +43,7 @@ from .transport import (
 from .envelope import (
     EV_ERROR,
     EV_EXPECTATION_VIOLATED,
+    EV_HANDOFF,
     EV_PARTICIPANT_REMOVED,
     EV_PEER_RECONNECTED,
     EV_PEER_UNREACHABLE,
@@ -108,6 +109,7 @@ __all__ = (
     "CostProfile",
     "EV_ERROR",
     "EV_EXPECTATION_VIOLATED",
+    "EV_HANDOFF",
     "EV_PARTICIPANT_REMOVED",
     "EV_PEER_RECONNECTED",
     "EV_PEER_UNREACHABLE",

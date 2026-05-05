@@ -107,11 +107,29 @@ class NetworkPlugin(Plugin):
         list. Returns the new tool objects so callers can later remove
         them if the workflow ends and the surface should be trimmed.
 
-        Tools are scoped per-agent, not per-session — if the agent
-        joins multiple workflows, call ``register_workflow`` once per
-        graph; the union of tools is fine because each tool emits an
-        ``ag2.handoff`` envelope on the *current* session, and
-        non-matching adapters fall through to ``default_target``.
+        Tools are scoped **per-agent, not per-session**. Each tool
+        emits its ``ag2.handoff`` envelope on whatever session is
+        currently active when the LLM calls it (resolved via the
+        plugin's ``SessionInject``).
+
+        ⚠️  **Cross-workflow footgun.** If the same agent registers
+        workflows A and B, tool ``foo`` from A is *also* visible while
+        the agent is taking its turn in B. If the LLM invokes ``foo``
+        during B's turn, the resulting ``ag2.handoff`` lands in
+        session B. B's graph almost certainly has no
+        ``ToolCalled("foo")`` transition, so it falls through to B's
+        ``default_target`` — which is commonly ``TerminateTarget``,
+        prematurely closing B. Mitigations until per-session tool
+        scoping ships (Phase 2):
+
+        * Use distinct, namespaced tool names across workflows
+          (e.g. ``triage_to_eng`` vs ``billing_to_eng``).
+        * Register only one workflow per agent at a time, calling
+          ``register_workflow`` lazily as the agent enters each one
+          and removing the tool objects when leaving.
+        * Pick a non-terminating ``default_target`` (e.g.
+          ``StayTarget()``) on graphs the agent might be running
+          alongside other workflows.
         """
         new_tools = make_handoff_tools_for_graph(self._client, graph)
         existing = {t.name for t in self._client.agent.tools}

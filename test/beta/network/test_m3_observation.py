@@ -347,9 +347,14 @@ async def test_agent_client_set_resume_refreshes_local_cache() -> None:
 
     assert alice.resume.summary == "updated"
     assert "x" in alice.resume.claimed_capabilities
-    assert hub.agents_with_capability("x") != [alice.agent_id]
-    # set_resume doesn't currently re-index claims (that's covered by
-    # register / record_observation). Just verify cache refresh works.
+    # ``set_resume`` re-indexes claimed_capabilities so newly-claimed
+    # caps surface under ``peers(action="find", capability=...)``.
+    assert hub.agents_with_capability("x") == [alice.agent_id]
+
+    # Removing a claim drops the agent from that bucket so the index
+    # stays consistent with the current resume.
+    await alice.set_resume(Resume(summary="updated2", claimed_capabilities=[]))
+    assert hub.agents_with_capability("x") == []
 
     await alice_hc.close()
     await hub.close()

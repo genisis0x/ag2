@@ -324,12 +324,14 @@ class HubClient:
         capability: str,
         outcome: TaskState,
         latency_ms: int | None = None,
+        task_id: str | None = None,
     ) -> None:
         await self._hub.record_observation(
             owner_id=owner_id,
             capability=capability,
             outcome=outcome,
             latency_ms=latency_ms,
+            task_id=task_id,
         )
 
     # ── Lifecycle ────────────────────────────────────────────────────────────

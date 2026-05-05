@@ -112,7 +112,13 @@ class TaskMirror:
             )
 
     async def _record(
-        self, *, owner_id: str, capability: str, outcome: TaskState, latency_ms: int | None
+        self,
+        *,
+        owner_id: str,
+        capability: str,
+        outcome: TaskState,
+        latency_ms: int | None,
+        task_id: str,
     ) -> None:
         if self._hub_client is not None:
             await self._hub_client.record_observation(
@@ -120,6 +126,7 @@ class TaskMirror:
                 capability=capability,
                 outcome=outcome,
                 latency_ms=latency_ms,
+                task_id=task_id,
             )
         elif self._hub is not None:
             await self._hub.record_observation(
@@ -127,6 +134,7 @@ class TaskMirror:
                 capability=capability,
                 outcome=outcome,
                 latency_ms=latency_ms,
+                task_id=task_id,
             )
 
     def attach(self, stream: "Stream") -> list[object]:
@@ -242,6 +250,7 @@ class TaskMirror:
                 capability=task_meta.spec.capability,
                 outcome=outcome,
                 latency_ms=latency_ms,
+                task_id=task_id,
             )
         except Exception:
             pass

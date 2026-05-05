@@ -17,20 +17,50 @@ Phase 2.
 from autogen.beta.compact import CompactionSummary
 from autogen.beta.events import BaseEvent, ModelMessage, ModelRequest, TextInput
 
-from ..envelope import EV_TEXT, Envelope, visible_to
+from ..envelope import EV_HANDOFF, EV_TEXT, Envelope, visible_to
 from ..session import SessionMetadata
 
 __all__ = ("FullTranscript", "WindowedSummary")
 
 
+_PROJECTED_EVENT_TYPES = frozenset({EV_TEXT, EV_HANDOFF})
+
+
+def _envelope_text(envelope: Envelope) -> str | None:
+    """Render a substantive envelope into the text the LLM should see.
+
+    Returns ``None`` for envelopes that should be skipped (non-text
+    payload, unsupported event type). ``EV_HANDOFF`` envelopes are
+    rendered as ``"[Handed off via <tool>] <reason>"`` so multi-hop
+    workflows preserve the conversation thread on subsequent turns —
+    without this, ``WindowedSummary``/``FullTranscript`` would drop the
+    handoff and later turns would show replies without their triggers.
+    """
+    if envelope.event_type == EV_TEXT:
+        text = envelope.event_data.get("text", "")
+        if not isinstance(text, str):
+            return None
+        return text
+    if envelope.event_type == EV_HANDOFF:
+        tool = envelope.event_data.get("tool", "")
+        reason = envelope.event_data.get("reason", "")
+        if not isinstance(tool, str):
+            tool = str(tool)
+        if not isinstance(reason, str):
+            reason = str(reason)
+        rendered = f"[Handed off via {tool}] {reason}".strip()
+        return rendered or None
+    return None
+
+
 class FullTranscript:
     """Translate every envelope visible to ``participant_id``.
 
-    M2 projects only ``EV_TEXT`` envelopes — protocol-level events
-    (``EV_SESSION_*``, ``EV_TASK_*``, expectation violations) are hub
-    bookkeeping that the LLM doesn't need to reason about. The
-    ``NetworkContextPolicy`` renders session expectations / active task
-    metadata into the prompt prefix instead.
+    Projects ``EV_TEXT`` and ``EV_HANDOFF`` envelopes. Other protocol-
+    level events (``EV_SESSION_*``, ``EV_TASK_*``, expectation
+    violations) are hub bookkeeping that the LLM doesn't need to reason
+    about. The ``NetworkContextPolicy`` renders session expectations /
+    active task metadata into the prompt prefix instead.
 
     Inbound envelopes (sender != participant) become ``ModelRequest``
     (a "user turn"); own past envelopes become ``ModelMessage``.
@@ -49,10 +79,10 @@ class FullTranscript:
         for envelope in wal:
             if not visible_to(envelope, participant_id):
                 continue
-            if envelope.event_type != EV_TEXT:
+            if envelope.event_type not in _PROJECTED_EVENT_TYPES:
                 continue
-            text = envelope.event_data.get("text", "")
-            if not isinstance(text, str):
+            text = _envelope_text(envelope)
+            if text is None:
                 continue
             if envelope.sender_id == participant_id:
                 events.append(ModelMessage(text))
@@ -96,30 +126,29 @@ class WindowedSummary:
         participant_id: str,
         session: SessionMetadata,
     ) -> list[BaseEvent]:
-        visible: list[Envelope] = []
+        visible: list[tuple[Envelope, str]] = []
         for envelope in wal:
             if not visible_to(envelope, participant_id):
                 continue
-            if envelope.event_type != EV_TEXT:
+            if envelope.event_type not in _PROJECTED_EVENT_TYPES:
                 continue
-            text = envelope.event_data.get("text", "")
-            if not isinstance(text, str):
+            text = _envelope_text(envelope)
+            if text is None:
                 continue
-            visible.append(envelope)
+            visible.append((envelope, text))
 
         if len(visible) <= self._recent_n:
-            return [_to_event(e, participant_id) for e in visible]
+            return [_to_event(env, txt, participant_id) for env, txt in visible]
 
         cutoff = len(visible) - self._recent_n
         older = visible[:cutoff]
         recent = visible[cutoff:]
-        summary = _summarize_older(older)
+        summary = _summarize_older([env for env, _ in older])
         compaction = CompactionSummary(summary=summary, event_count=len(older))
-        return [compaction, *(_to_event(e, participant_id) for e in recent)]
+        return [compaction, *(_to_event(env, txt, participant_id) for env, txt in recent)]
 
 
-def _to_event(envelope: Envelope, participant_id: str) -> BaseEvent:
-    text = envelope.event_data.get("text", "")
+def _to_event(envelope: Envelope, text: str, participant_id: str) -> BaseEvent:
     if envelope.sender_id == participant_id:
         return ModelMessage(text)
     return ModelRequest([TextInput(text)])

@@ -19,13 +19,26 @@ from typing import TYPE_CHECKING
 
 from autogen.beta.tools import tool
 
-from ...envelope import EV_TEXT, Envelope
+from ...envelope import (
+    EV_SESSION_CLOSED,
+    EV_SESSION_EXPIRED,
+    EV_SESSION_INVITE_REJECT,
+    EV_TEXT,
+    Envelope,
+)
 from ..inject import AgentClientInject
 
 if TYPE_CHECKING:
     from ..agent_client import AgentClient
 
 __all__ = ("make_delegate_tool",)
+
+
+_TERMINAL_SESSION_EVENTS = frozenset({
+    EV_SESSION_CLOSED,
+    EV_SESSION_EXPIRED,
+    EV_SESSION_INVITE_REJECT,
+})
 
 
 def make_delegate_tool(agent_client: "AgentClient") -> object:
@@ -73,6 +86,12 @@ def make_delegate_tool(agent_client: "AgentClient") -> object:
         except Exception as exc:
             return f"Error: failed to open consulting session: {exc}"
 
+        # Pre-create the inbox BEFORE sending. Otherwise a fast reply
+        # (e.g. ``LocalLink`` where dispatch lands on the same loop tick)
+        # can hit ``AgentClient.receive`` before ``wait_for_session_event``
+        # creates the queue, and the envelope is silently dropped.
+        actual_client.ensure_session_inbox(session.session_id)
+
         # Suppress the default handler for this session — we own its
         # lifecycle here; we don't want the handler to ALSO run a turn
         # on the reply envelope when it lands.
@@ -90,30 +109,41 @@ def make_delegate_tool(agent_client: "AgentClient") -> object:
             except Exception as exc:
                 return f"Error: prompt send failed: {exc}"
 
-            # Wait for the respondent's reply.
+            # Wait for the respondent's reply OR a terminal session
+            # event. Terminating events resolve fast so the caller
+            # doesn't sit at ``timeout`` (300s default) when the session
+            # was rejected, expired, or closed out-of-band.
             try:
-                reply = await actual_client.wait_for_session_event(
+                envelope = await actual_client.wait_for_session_event(
                     session_id=session.session_id,
-                    predicate=_reply_predicate(target_id),
+                    predicate=_reply_or_terminal_predicate(target_id),
                     timeout=timeout,
                 )
             except asyncio.TimeoutError:
                 return f"Error: delegate to {target!r} timed out after {timeout}s"
             except Exception as exc:
                 return f"Error: delegate to {target!r} failed: {exc}"
+
+            # Terminal session event → fail-fast with the close reason.
+            if envelope.event_type in _TERMINAL_SESSION_EVENTS:
+                reason = envelope.event_data.get("reason", envelope.event_type)
+                return f"Error: delegate to {target!r} session closed: {reason}"
         finally:
             actual_client._unsuppress_handler(session.session_id)
+            actual_client.discard_session_inbox(session.session_id)
 
-        body = reply.event_data.get("text", "")
+        body = envelope.event_data.get("text", "")
         return body if isinstance(body, str) else str(body)
 
     return delegate
 
 
-def _reply_predicate(target_id: str):
-    """Match the consulting respondent's substantive reply."""
+def _reply_or_terminal_predicate(target_id: str):
+    """Match the respondent's substantive reply OR any terminal session event."""
 
     def matches(envelope: Envelope) -> bool:
-        return envelope.event_type == EV_TEXT and envelope.sender_id == target_id
+        if envelope.event_type == EV_TEXT and envelope.sender_id == target_id:
+            return True
+        return envelope.event_type in _TERMINAL_SESSION_EVENTS
 
     return matches

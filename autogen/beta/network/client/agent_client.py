@@ -204,6 +204,32 @@ class AgentClient:
         )
         return Session(metadata=metadata, client=self)
 
+    def ensure_session_inbox(self, session_id: str) -> "asyncio.Queue[Envelope]":
+        """Create (or fetch) the per-session inbox queue.
+
+        Callers that send first and then ``wait_for_session_event`` MUST
+        call this BEFORE the send. Otherwise a fast reply (e.g. via
+        ``LocalLink`` where dispatch happens on the same event-loop tick)
+        can be delivered to ``receive`` before the wait creates the
+        inbox — the envelope would then be dropped silently.
+
+        Idempotent: returns the existing queue if one is already bound.
+        """
+        inbox = self._session_inboxes.get(session_id)
+        if inbox is None:
+            inbox = asyncio.Queue()
+            self._session_inboxes[session_id] = inbox
+        return inbox
+
+    def discard_session_inbox(self, session_id: str) -> None:
+        """Drop the per-session inbox queue.
+
+        Callers should invoke this after they've finished waiting on a
+        session so the per-client memory footprint doesn't grow with
+        every consulted session.
+        """
+        self._session_inboxes.pop(session_id, None)
+
     async def wait_for_session_event(
         self,
         *,
@@ -220,10 +246,7 @@ class AgentClient:
 
         Raises ``asyncio.TimeoutError`` on timeout.
         """
-        inbox = self._session_inboxes.get(session_id)
-        if inbox is None:
-            inbox = asyncio.Queue()
-            self._session_inboxes[session_id] = inbox
+        inbox = self.ensure_session_inbox(session_id)
 
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout

@@ -49,7 +49,13 @@ from ..envelope import (
     EV_SESSION_OPENED,
     Envelope,
 )
-from ..errors import AccessDeniedError, NetworkError, NotFoundError, ProtocolError
+from ..errors import (
+    AccessDeniedError,
+    InboxFull,
+    NetworkError,
+    NotFoundError,
+    ProtocolError,
+)
 from ..identity import ObservedStat, Passport, Resume, ResumeExample
 from ..ids import make_id
 from ..rule import Rule, parse_duration
@@ -185,9 +191,12 @@ class Hub:
         self._audit_log = AuditLog(store)
         self._expectation_evaluators: dict[str, ExpectationEvaluator] = {}
         self._violation_handlers: dict[str, ViolationHandler] = {}
-        # session_id → set of (expectation_name, violator_id) already fired.
-        # Empty violator_id ("") represents session-wide violations.
-        self._fired_violations: dict[str, set[tuple[str, str]]] = {}
+        # session_id → set of (expectation_index, expectation_name, violator_id) fired.
+        # The position-based index disambiguates same-name expectations
+        # (e.g. two ``turn_within`` entries with different ``on_violation``
+        # handlers — without the index the first to fire would suppress
+        # the second). Empty violator_id ("") = session-wide violations.
+        self._fired_violations: dict[str, set[tuple[int, str, str]]] = {}
 
         # Identity caches.
         self._passports: dict[str, Passport] = {}
@@ -212,6 +221,19 @@ class Hub:
         # Task caches (observed; not owned).
         self._tasks: dict[str, TaskMetadata] = {}
         self._session_tasks: dict[str, set[str]] = {}
+        # task_ids whose terminal observation has been recorded into
+        # the owner's ``Resume.observed`` already. Prevents double-counting
+        # when the same task receives multiple terminal events (e.g. a
+        # session-cascade EXPIRED followed by an owner-emitted COMPLETED).
+        self._observed_task_ids: set[str] = set()
+
+        # Per-recipient outstanding-envelope counter for ``InboxBlock.max_pending``
+        # enforcement. Incremented on dispatch to that recipient,
+        # decremented when the recipient posts any envelope (treating
+        # any outbound activity as "I'm processing my inbox"). A
+        # best-effort approximation in V1 — Phase 3 with WS transport
+        # gets per-session ack semantics.
+        self._inbox_pending: dict[str, int] = {}
 
         # Transport-side state.
         self._endpoints_by_id: dict[str, LinkEndpoint] = {}
@@ -429,7 +451,7 @@ class Hub:
                 now_seconds=now_seconds,
             )
             terminal = False
-            for expectation in metadata.manifest.expectations:
+            for idx, expectation in enumerate(metadata.manifest.expectations):
                 evaluator = self._expectation_evaluators.get(expectation.name)
                 if evaluator is None:
                     continue
@@ -442,7 +464,7 @@ class Hub:
                 fired = self._fired_violations.setdefault(session_id, set())
                 violator_keys = violation.violator_ids or [""]
                 for vid in violator_keys:
-                    key = (expectation.name, vid)
+                    key = (idx, expectation.name, vid)
                     if key in fired:
                         continue
                     fired.add(key)
@@ -476,6 +498,16 @@ class Hub:
         await adapter.validate(passport, passport.auth.claim)
 
         async with self._registration_lock:
+            # Reject a re-register that collides on ``name``: the prior
+            # registration's passport / resume / rule / SKILL.md would
+            # be orphaned on disk under a now-unreachable agent_id.
+            # Tenants must explicitly ``unregister`` first.
+            if passport.name in self._name_to_id:
+                raise ProtocolError(
+                    f"name {passport.name!r} already registered "
+                    f"(agent_id={self._name_to_id[passport.name]}); "
+                    "unregister it before re-registering."
+                )
             agent_id = make_id()
             passport.agent_id = agent_id
             passport.created_at = self._clock()
@@ -538,6 +570,20 @@ class Hub:
                     empty_caps.append(cap)
             for cap in empty_caps:
                 self._capability_index.pop(cap, None)
+
+            # Delete on-disk identity files. Without this the next
+            # ``hydrate()`` would re-load the unregistered agent from
+            # disk, breaking the M1 hydrate contract. Sessions and tasks
+            # the agent participated in are kept for audit / read; only
+            # the per-agent identity files are removed.
+            await self._store.delete(passport_path(agent_id))
+            await self._store.delete(resume_path(agent_id))
+            await self._store.delete(rule_path(agent_id))
+            await self._store.delete(skill_path(agent_id))
+
+            # Drop inbox accounting so a future re-register with a
+            # different agent_id starts from zero.
+            self._inbox_pending.pop(agent_id, None)
 
         await self._persist_capability_index()
         await self._audit_log.append({
@@ -612,8 +658,35 @@ class Hub:
         resume.version = (
             (self._resumes[agent_id].version + 1) if agent_id in self._resumes else resume.version
         )
+
+        # Diff capabilities so the index stays in sync. Without this,
+        # a tenant adding a new claim via ``set_resume`` would not
+        # surface under ``peers(action="find", capability=...)`` until
+        # the agent re-registered or recorded an observation.
+        old_resume = self._resumes.get(agent_id)
+        old_caps: set[str] = set()
+        if old_resume is not None:
+            old_caps.update(old_resume.claimed_capabilities)
+            old_caps.update(old_resume.observed.keys())
+        new_caps: set[str] = set(resume.claimed_capabilities) | set(resume.observed.keys())
+
         await self._persist_resume(agent_id, resume)
         self._resumes[agent_id] = resume
+
+        added = new_caps - old_caps
+        removed = old_caps - new_caps
+        for cap in added:
+            self._capability_index.setdefault(cap, set()).add(agent_id)
+        for cap in removed:
+            bucket = self._capability_index.get(cap)
+            if bucket is None:
+                continue
+            bucket.discard(agent_id)
+            if not bucket:
+                self._capability_index.pop(cap, None)
+        if added or removed:
+            await self._persist_capability_index()
+
         await self._audit_log.append({
             "at": self._clock(),
             "kind": AUDIT_KIND_RESUME_SET,
@@ -660,6 +733,7 @@ class Hub:
         capability: str,
         outcome: TaskState,
         latency_ms: int | None = None,
+        task_id: str | None = None,
     ) -> None:
         """Update ``Resume.observed[capability]`` from a terminal task event.
 
@@ -672,8 +746,14 @@ class Hub:
         (``COMPLETED`` / ``FAILED`` / ``EXPIRED``); other states are
         ignored. ``latency_ms``, when provided, replaces the prior
         ``p50_latency_ms`` (full reservoir sampling is Phase 2).
+
+        ``task_id`` (when provided) is used to dedup: a single task
+        contributing twice to ``Resume.observed.n`` (e.g. cascade
+        EXPIRED + owner-emitted COMPLETED) is recorded only once.
         """
         if outcome not in TERMINAL_TASK_STATES:
+            return
+        if task_id is not None and task_id in self._observed_task_ids:
             return
         resume = self._resumes.get(owner_id)
         if resume is None:
@@ -697,6 +777,9 @@ class Hub:
         if owner_id not in bucket:
             bucket.add(owner_id)
             await self._persist_capability_index()
+
+        if task_id is not None:
+            self._observed_task_ids.add(task_id)
 
         await self._audit_log.append({
             "at": self._clock(),
@@ -751,10 +834,26 @@ class Hub:
 
         adapter = self._adapter_for(manifest_type, manifest_version)
 
+        creator_rule = self._rules.get(creator_id, Rule())
+
+        # Concurrency cap: count active sessions where this agent is
+        # the creator. ``0`` disables the cap. Hub rejects before any
+        # WAL or persistence work so the caller sees the limit
+        # synchronously and on-disk state stays clean.
+        max_sessions = creator_rule.limits.max_concurrent_sessions
+        if max_sessions > 0:
+            active = sum(
+                1 for m in self._active_sessions.values() if m.creator_id == creator_id
+            )
+            if active >= max_sessions:
+                raise AccessDeniedError(
+                    f"creator {creator_id!r} exceeded max_concurrent_sessions "
+                    f"({active} >= {max_sessions})"
+                )
+
         session_id = make_id()
         now = self._clock()
 
-        creator_rule = self._rules.get(creator_id, Rule())
         ttl_value: str | int = ttl if ttl is not None else creator_rule.limits.session_ttl_default
         ttl_seconds = parse_duration(ttl_value)
         expires_at = _expires_at(now, ttl_seconds) or None
@@ -953,6 +1052,9 @@ class Hub:
 
         Hub does not create, assign, or cancel — it stores
         ``TaskMetadata``, persists it, and starts TTL accounting.
+
+        On first observation, enforces the owner's
+        ``Rule.limits.max_concurrent_tasks`` cap (``0`` disables).
         """
         if metadata.task_id in self._tasks:
             # Update in place — owner re-emitting TaskStarted on retry, etc.
@@ -964,6 +1066,21 @@ class Hub:
             existing.progress.update(metadata.progress)
             await self._persist_task_metadata(existing)
             return
+
+        owner_rule = self._rules.get(metadata.owner_id, Rule())
+        max_tasks = owner_rule.limits.max_concurrent_tasks
+        if max_tasks > 0:
+            active = sum(
+                1
+                for t in self._tasks.values()
+                if t.owner_id == metadata.owner_id and t.state not in TERMINAL_TASK_STATES
+            )
+            if active >= max_tasks:
+                raise AccessDeniedError(
+                    f"owner {metadata.owner_id!r} exceeded max_concurrent_tasks "
+                    f"({active} >= {max_tasks})"
+                )
+
         self._tasks[metadata.task_id] = metadata
         if metadata.session_id:
             self._session_tasks.setdefault(metadata.session_id, set()).add(metadata.task_id)
@@ -1105,6 +1222,33 @@ class Hub:
                 f"session {envelope.session_id!r} not active (state={metadata.state.value})"
             )
 
+        # Inbox capacity check (substantive events only — protocol
+        # invites / acks / opens / closes must always reach
+        # participants for the session machine to advance).
+        if not _is_protocol_event(envelope.event_type):
+            if envelope.audience is not None:
+                inbox_audience: list[str] = list(envelope.audience)
+            else:
+                inbox_audience = [
+                    p.agent_id
+                    for p in metadata.participants
+                    if p.agent_id != envelope.sender_id
+                ]
+            for recipient_id in inbox_audience:
+                if recipient_id == envelope.sender_id:
+                    continue
+                recipient_rule = self._rules.get(recipient_id)
+                if recipient_rule is None:
+                    continue
+                max_pending = recipient_rule.limits.inbox.max_pending
+                if max_pending > 0:
+                    current = self._inbox_pending.get(recipient_id, 0)
+                    if current >= max_pending:
+                        raise InboxFull(
+                            f"recipient {recipient_id!r} inbox at capacity "
+                            f"({current} >= {max_pending})"
+                        )
+
         adapter = self._adapter_for(metadata.manifest.type, metadata.manifest.version)
 
         # Critical section: validate, append, fold, on_accepted under lock.
@@ -1129,6 +1273,14 @@ class Hub:
             new_state = adapter.fold(envelope, state)
             self._adapter_states[envelope.session_id] = new_state
             result = adapter.on_accepted(metadata, envelope, new_state)
+
+        # Sender showed they're processing their inbox — decrement
+        # their outstanding count. Substantive events only; protocol
+        # acks and opens shouldn't drain inbox accounting.
+        if not _is_protocol_event(envelope.event_type):
+            current = self._inbox_pending.get(envelope.sender_id, 0)
+            if current > 0:
+                self._inbox_pending[envelope.sender_id] = current - 1
 
         # Outside lock: dispatch + post-accept handling.
         # Acks/rejects are absorbed by the hub — they aren't dispatched.
@@ -1192,6 +1344,7 @@ class Hub:
 
         sender_passport = self._passports.get(envelope.sender_id)
         sender_name = sender_passport.name if sender_passport is not None else envelope.sender_id
+        substantive = not _is_protocol_event(envelope.event_type)
 
         for recipient_id in recipients:
             recipient_rule = self._rules.get(recipient_id)
@@ -1202,6 +1355,10 @@ class Hub:
             endpoint = self._endpoint_for(recipient_id)
             if endpoint is None:
                 continue
+            if substantive:
+                self._inbox_pending[recipient_id] = (
+                    self._inbox_pending.get(recipient_id, 0) + 1
+                )
             await endpoint.send_frame(
                 NotifyFrame(envelope=envelope, recipient_id=recipient_id)
             )

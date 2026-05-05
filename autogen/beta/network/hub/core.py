@@ -31,6 +31,7 @@ import contextlib
 import fnmatch
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from autogen.beta.knowledge import KnowledgeStore
@@ -118,7 +119,23 @@ from .layout import (
 )
 from .sweepers import _IntervalSweeper
 
-__all__ = ("Hub",)
+__all__ = ("Hub", "PendingTurn")
+
+
+@dataclass(slots=True)
+class PendingTurn:
+    """One pending turn for an agent: the trigger envelope they should react to.
+
+    Returned by :meth:`Hub.pending_turns_for`. ``last_envelope_id``
+    identifies the inbound substantive envelope (typically ``EV_TEXT``
+    or ``EV_HANDOFF``) that put this agent on the hook; the default
+    notify handler re-runs against it on reconnect to wake up
+    unfinished turns. ``reason`` is a short diagnostic string.
+    """
+
+    session_id: str
+    last_envelope_id: str
+    reason: str
 
 
 def _utc_now_iso() -> str:
@@ -220,6 +237,12 @@ class Hub:
         self._active_sessions: dict[str, SessionMetadata] = {}
         self._adapter_states: dict[str, object] = {}
         self._session_open_waiters: dict[str, asyncio.Future[SessionMetadata]] = {}
+        # Phase 2.0 idempotency index: per-session map of (sender_id,
+        # causation_id) → envelope. Populated by ``post_envelope`` after
+        # WAL append and rebuilt from disk on ``hydrate()``. Lookup
+        # backs ``find_envelope_by_causation`` so the default notify
+        # handler can dedup duplicate replies after redelivery.
+        self._causation_index: dict[str, dict[tuple[str, str], Envelope]] = {}
 
         # Task caches (observed; not owned).
         self._tasks: dict[str, TaskMetadata] = {}
@@ -317,6 +340,7 @@ class Hub:
         self._sessions.clear()
         self._active_sessions.clear()
         self._adapter_states.clear()
+        self._causation_index.clear()
         self._tasks.clear()
         self._session_tasks.clear()
 
@@ -1035,6 +1059,85 @@ class Hub:
         end = len(envelopes) if until is None else until
         return envelopes[since:end]
 
+    def find_envelope_by_causation(
+        self,
+        session_id: str,
+        *,
+        sender_id: str,
+        causation_id: str,
+    ) -> Envelope | None:
+        """Look up an envelope by ``(sender_id, causation_id)`` in the
+        session's WAL.
+
+        Phase 2.0 idempotency primitive. Returns the prior reply if any
+        — the default notify handler calls this before sending so
+        redelivery doesn't produce duplicate replies.
+
+        Index is rebuilt from the WAL on ``hydrate()``; no separate
+        persisted file. Synchronous because the index is in-memory; the
+        async signature is reserved for callers that may eventually need
+        a paged read.
+        """
+        if not causation_id:
+            return None
+        by_session = self._causation_index.get(session_id)
+        if by_session is None:
+            return None
+        return by_session.get((sender_id, causation_id))
+
+    async def pending_turns_for(self, agent_id: str) -> list[PendingTurn]:
+        """Return active sessions where adapter state expects this agent
+        to act but no reply has landed since the triggering envelope.
+
+        Phase 2.0 wake-up primitive. The default handler calls this on
+        reconnect and re-runs ``_process_text`` against each turn's
+        triggering envelope. Same code path as a live notify; the
+        idempotency query above ensures redelivery is safe.
+
+        Detection logic: the agent is "pending" iff (a) they're a
+        participant in an active session, (b) the adapter would accept
+        a substantive send from them right now (``can_send`` probe),
+        and (c) the most recent substantive envelope in the WAL is
+        from someone else (i.e. they haven't already replied to it).
+        """
+        pending: list[PendingTurn] = []
+        for session_id, metadata in self._active_sessions.items():
+            if metadata.state != SessionState.ACTIVE:
+                continue
+            if agent_id not in (p.agent_id for p in metadata.participants):
+                continue
+            if not self.can_send(session_id, agent_id):
+                continue
+            wal = await self.read_wal(session_id)
+            trigger: Envelope | None = None
+            for env in reversed(wal):
+                if _is_protocol_event(env.event_type):
+                    continue
+                if env.sender_id == agent_id:
+                    # Most recent substantive envelope is our own — caught up.
+                    break
+                trigger = env
+                break
+            if trigger is not None:
+                pending.append(
+                    PendingTurn(
+                        session_id=session_id,
+                        last_envelope_id=trigger.envelope_id,
+                        reason="adapter_expected_speaker",
+                    )
+                )
+        return pending
+
+    def get_rule(self, agent_id: str) -> Rule:
+        """Return the cached ``Rule`` for ``agent_id``.
+
+        Falls back to a default ``Rule`` if no rule was set explicitly
+        — matches the lookup convention used by ``post_envelope`` and
+        ``observe_task``. Public so reconnect paths
+        (``HubClient.attach``) don't reach into the private cache.
+        """
+        return self._rules.get(agent_id, Rule())
+
     # ── Tasks (observe-only) ────────────────────────────────────────────────
 
     async def observe_task(self, metadata: TaskMetadata) -> None:
@@ -1242,6 +1345,7 @@ class Hub:
             envelope.created_at = self._clock()
 
             await self._wal_append(envelope)
+            self._index_causation(envelope)
             new_state = adapter.fold(envelope, state)
             self._adapter_states[envelope.session_id] = new_state
             result = adapter.on_accepted(metadata, envelope, new_state)
@@ -1304,6 +1408,23 @@ class Hub:
 
     async def _wal_append(self, envelope: Envelope) -> None:
         await self._store.append(wal_path(envelope.session_id), envelope.to_json() + "\n")
+
+    def _index_causation(self, envelope: Envelope) -> None:
+        """Record this envelope under its (sender, causation) key so
+        ``find_envelope_by_causation`` can answer in O(1).
+
+        Skip envelopes with empty ``causation_id`` — they're not
+        replies, so duplicate-reply lookups never need to find them.
+        """
+        if not envelope.causation_id:
+            return
+        by_session = self._causation_index.setdefault(envelope.session_id, {})
+        # Last-write-wins is the right semantics: the WAL is append-only,
+        # so a duplicate (sender, causation) means the same logical reply
+        # was somehow re-appended; we keep the most recent. In practice
+        # the dedup query in the default handler prevents this from
+        # happening at all.
+        by_session[(envelope.sender_id, envelope.causation_id)] = envelope
 
     async def _dispatch(self, envelope: Envelope, metadata: SessionMetadata) -> None:
         """Send NotifyFrames to the audience (or all participants if broadcast)."""
@@ -1565,6 +1686,7 @@ class Hub:
         wal = await self.read_wal(session_id)
         for envelope in wal:
             state = adapter.fold(envelope, state)
+            self._index_causation(envelope)
         self._adapter_states[session_id] = state
 
     async def _load_task(self, task_id: str) -> None:

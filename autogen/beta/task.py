@@ -19,7 +19,7 @@ if no observer subscribes. Network observation is layered on top via
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from .annotations import Inject
@@ -29,6 +29,7 @@ from .stream import MemoryStream
 
 __all__ = (
     "TERMINAL_TASK_STATES",
+    "CheckpointStore",
     "Task",
     "TaskInject",
     "TaskMetadata",
@@ -95,6 +96,23 @@ class TaskMetadata:
     session_id: str | None = None
 
 
+@runtime_checkable
+class CheckpointStore(Protocol):
+    """Storage backend for ``Task.checkpoint`` persistence.
+
+    Implemented by the network's hub-backed adapter for network agents;
+    standalone agents can supply any backend or omit and skip
+    checkpointing entirely. The framework writes JSON-friendly dicts;
+    the store is responsible only for storage, not interpretation.
+    """
+
+    async def read(self, task_id: str) -> dict[str, Any] | None:
+        """Return the prior checkpoint state for ``task_id`` or ``None``."""
+
+    async def write(self, task_id: str, state: dict[str, Any]) -> None:
+        """Persist ``state`` for ``task_id``. Last-write-wins."""
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -135,6 +153,9 @@ class Task:
         spec: TaskSpec,
         context: ConversationContext | None = None,
         ttl_seconds: int | None = None,
+        task_id: str | None = None,
+        checkpoint_store: CheckpointStore | None = None,
+        resume_from: str | None = None,
     ) -> None:
         # __init__ stores params; side effects happen in __aenter__.
         self._owner_id = owner_id
@@ -145,6 +166,16 @@ class Task:
         self._metadata: TaskMetadata | None = None
         self._had_previous_dep = False
         self._previous_dep: Any = None
+        # Phase 2.0 checkpoint plumbing:
+        # ``task_id`` lets a resume operation reuse a known id; left
+        # ``None`` for fresh tasks. ``resume_from`` requests a read of
+        # the prior checkpoint at ``__aenter__`` time and pins the task
+        # id to that value (so subsequent ``checkpoint`` writes land
+        # on the same key).
+        self._explicit_task_id = task_id
+        self._checkpoint_store = checkpoint_store
+        self._resume_from = resume_from
+        self._resumed_state: dict[str, Any] | None = None
 
     @property
     def task_id(self) -> str:
@@ -190,6 +221,37 @@ class Task:
                 payload=dict(payload),
             )
         )
+
+    @property
+    def resumed_state(self) -> dict[str, Any] | None:
+        """Phase 2.0: prior checkpoint state if this Task was constructed
+        with ``resume_from`` and a checkpoint existed; otherwise ``None``.
+
+        Owners inspect this on entry to decide where to pick up. Reads
+        from the checkpoint store happen in ``__aenter__``; this getter
+        just returns the cached result.
+        """
+        return self._resumed_state
+
+    async def checkpoint(self, state: dict[str, Any]) -> None:
+        """Phase 2.0: persist owner-supplied resume state.
+
+        Different from ``progress``: progress is observable telemetry,
+        checkpoints are for restart recovery. Owners choose what to
+        write and when. The framework provides storage but never
+        inspects the contents — ``state`` is opaque user data.
+
+        No-op when no ``CheckpointStore`` was supplied (checkpointing
+        is opt-in) or when the task is already terminal. Last-write-wins;
+        the store is responsible for atomic replace.
+        """
+        if self._metadata is None:
+            raise RuntimeError("Task.checkpoint() called before __aenter__")
+        if self._metadata.state in TERMINAL_TASK_STATES:
+            return
+        if self._checkpoint_store is None:
+            return
+        await self._checkpoint_store.write(self._metadata.task_id, dict(state))
 
     async def complete(self, result: Any = None) -> None:
         """Terminal: emit ``TaskCompleted``; state ← COMPLETED.
@@ -268,10 +330,26 @@ class Task:
             self._context = ConversationContext(stream=MemoryStream())
             self._owns_context = True
 
+        # Phase 2.0: when resuming from a prior task, read the
+        # checkpoint and pin the new task's id to the resumed one so
+        # subsequent ``checkpoint`` writes land on the same key. The
+        # store may legitimately return ``None`` (checkpoint never
+        # written, or store cleared) — in that case the resume reduces
+        # to a fresh task that happens to share the prior id.
+        if self._resume_from is not None and self._checkpoint_store is not None:
+            self._resumed_state = await self._checkpoint_store.read(self._resume_from)
+
+        if self._resume_from is not None:
+            task_id = self._resume_from
+        elif self._explicit_task_id is not None:
+            task_id = self._explicit_task_id
+        else:
+            task_id = uuid4().hex
+
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
         self._metadata = TaskMetadata(
-            task_id=uuid4().hex,
+            task_id=task_id,
             owner_id=self._owner_id,
             spec=self._spec,
             state=TaskState.RUNNING,

@@ -30,10 +30,12 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from autogen.beta.agent import Agent
+from autogen.beta.task import CheckpointStore
 
 from ..envelope import Envelope
 from ..identity import Passport, Resume, ResumeExample
 from ..rule import Rule
+from .checkpoint import HubBackedCheckpointStore
 from .handlers import default_handler
 from .session import Session
 
@@ -86,6 +88,11 @@ class AgentClient:
         # for delegation-depth enforcement (Rule.limits.delegation_depth).
         self._handling_envelope_stack: list[Envelope] = []
 
+        # Phase 2.0: hub-backed checkpoint store for Task.checkpoint
+        # persistence. Lazy — only constructed if accessed; standalone
+        # agents that never checkpoint pay no cost.
+        self._checkpoint_store: CheckpointStore | None = None
+
     # ── Properties ───────────────────────────────────────────────────────────
 
     @property
@@ -109,6 +116,20 @@ class AgentClient:
         if self._passport.agent_id is None:
             raise RuntimeError("AgentClient has unstamped passport (not registered)")
         return self._passport.agent_id
+
+    @property
+    def checkpoint_store(self) -> CheckpointStore:
+        """Phase 2.0: hub-backed ``CheckpointStore`` for ``Task.checkpoint``.
+
+        Pass to ``agent.task(checkpoint_store=...)`` when you want a
+        long-running task to survive interruption — the checkpoint
+        lands next to the task's metadata under
+        ``/tasks/{task_id}/checkpoint.json`` in the hub's
+        ``KnowledgeStore``. Constructed lazily on first access.
+        """
+        if self._checkpoint_store is None:
+            self._checkpoint_store = HubBackedCheckpointStore(self._hub._store)
+        return self._checkpoint_store
 
     # ── NetworkClient impl ───────────────────────────────────────────────────
 
@@ -306,3 +327,41 @@ class AgentClient:
         if not self._disconnected:
             await self._hub_client.unregister_agent(self.agent_id)
             self._disconnected = True
+
+    # ── Phase 2.0 durability ────────────────────────────────────────────────
+
+    async def resume_pending_turns(self) -> int:
+        """Re-run the registered envelope handler for any pending turns.
+
+        Queries the hub for sessions where this agent is the expected
+        speaker but no reply has landed since the triggering envelope
+        (see :meth:`Hub.pending_turns_for`). For each, fetches the
+        triggering envelope from the WAL and re-fires the registered
+        handler against it — same code path as a live ``NotifyFrame``
+        delivery, so workflows resume seamlessly.
+
+        Idempotency is preserved by the default handler's
+        ``find_envelope_by_causation`` dedup query: if the prior run
+        already posted a reply, the handler short-circuits and posts
+        nothing.
+
+        Returns the number of turns re-fired.
+        """
+        if self._on_envelope is None:
+            return 0
+        pending = await self._hub_client.pending_turns_for(self.agent_id)
+        count = 0
+        for turn in pending:
+            wal = await self._hub_client.read_wal(turn.session_id)
+            trigger: Envelope | None = None
+            for env in wal:
+                if env.envelope_id == turn.last_envelope_id:
+                    trigger = env
+                    break
+            if trigger is None:
+                # WAL changed between query and read — skip; the next
+                # pending_turns sweep will catch any leftover.
+                continue
+            await self._on_envelope(trigger)
+            count += 1
+        return count

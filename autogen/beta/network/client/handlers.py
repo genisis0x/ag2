@@ -150,6 +150,17 @@ async def _process_text(envelope: Envelope, client: "AgentClient") -> None:
     if not client._hub_client.can_send(envelope.session_id, client.agent_id):
         return  # not our turn / session closing — don't engage LLM
 
+    # Phase 2.0: if a reply with this causation has already been
+    # accepted, redelivery (or a resumed pending turn) is a no-op.
+    # Without the WAL stamp the envelope_id is empty — only check
+    # when the hub has actually accepted the inbound.
+    if envelope.envelope_id and client._hub_client.find_envelope_by_causation(
+        envelope.session_id,
+        sender_id=client.agent_id,
+        causation_id=envelope.envelope_id,
+    ) is not None:
+        return  # already replied to this trigger; idempotent dedup
+
     session = Session(metadata=metadata, client=client)
     view = resolve_view_policy(client, metadata)
 

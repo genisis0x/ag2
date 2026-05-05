@@ -71,7 +71,7 @@ from .observer import Observer
 from .observer import observer as observer_factory
 from .response import ResponseProto, ResponseSchema
 from .stream import MemoryStream, Stream
-from .task import Task, TaskSpec
+from .task import CheckpointStore, Task, TaskSpec
 from .tools.executor import ToolExecutor
 from .tools.final import FunctionParameters, FunctionTool, FunctionToolSchema, tool
 from .tools.schemas import ToolSchema
@@ -630,6 +630,9 @@ class Agent(Generic[TResult]):
         capability: str | None = None,
         ttl_seconds: int | None = None,
         context: Context | None = None,
+        task_id: str | None = None,
+        checkpoint_store: CheckpointStore | None = None,
+        resume_from: str | None = None,
     ) -> Task:
         """Create a ``Task`` whose lifecycle this Agent owns.
 
@@ -647,6 +650,18 @@ class Agent(Generic[TResult]):
         agent is registered with the network, the ``TaskMirror`` calls
         ``Hub.record_observation`` on the terminal event so the matching
         ``Resume.observed[capability]`` track record updates.
+
+        Phase 2.0 — opt-in restart-recoverable work:
+
+        * ``checkpoint_store`` plumbs a ``CheckpointStore`` through to
+          the Task. When set, ``task.checkpoint(state)`` persists owner
+          state; ``task.resumed_state`` exposes the prior write on entry.
+        * ``resume_from`` pins the new Task's ``task_id`` to a prior
+          one and reads its checkpoint at ``__aenter__`` (no-op if the
+          store has no record).
+        * ``task_id`` is rarely needed directly — set it explicitly only
+          when constructing a Task whose id was allocated externally
+          (e.g. by a hub) and not via resume.
         """
         spec = TaskSpec(
             title=title,
@@ -659,6 +674,9 @@ class Agent(Generic[TResult]):
             spec=spec,
             context=context,
             ttl_seconds=ttl_seconds,
+            task_id=task_id,
+            checkpoint_store=checkpoint_store,
+            resume_from=resume_from,
         )
 
     def tool(

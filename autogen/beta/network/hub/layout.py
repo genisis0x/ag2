@@ -27,6 +27,7 @@ __all__ = (
     "session_tasks_index_path",
     "sessions_root",
     "skill_path",
+    "task_checkpoint_path",
     "task_events_path",
     "task_metadata_path",
     "tasks_root",
@@ -120,6 +121,11 @@ def task_metadata_path(task_id: str) -> str:
 
 def task_events_path(task_id: str) -> str:
     return f"/tasks/{task_id}/events.jsonl"
+
+
+def task_checkpoint_path(task_id: str) -> str:
+    """Phase 2.0 — owner-supplied resume state, written by Task.checkpoint."""
+    return f"/tasks/{task_id}/checkpoint.json"
 
 
 # ── Audit ────────────────────────────────────────────────────────────────────

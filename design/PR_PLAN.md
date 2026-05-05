@@ -1,200 +1,172 @@
 # AG2 Network — Phase 1 PR Split
 
-This document describes how the `network-design` branch will be published to `main` as four stacked pull requests. It is the reference for branch creation, PR descriptions, and reviewer guidance.
+This document describes how the `network-design` branch will be published to `main` as three stacked pull requests. It is the reference for branch creation, PR descriptions, and reviewer guidance.
 
 Source of truth for the design itself is [PLAN.md](PLAN.md). This file only covers **how Phase 1 ships**.
 
 ## Strategy
 
-- **Four sequential PRs**, each stacked on the previous (`PR1 ← PR2 ← PR3 ← PR4`). Independence between PRs is **not** maintained — PR2 branches off PR1, PR3 off PR2, etc.
-- One PR per PLAN milestone: PR1 carries the framework-core `Task` precondition + M1 foundation. PR2/PR3/PR4 map 1:1 to M2/M3/M4.
-- **Each file ships once**, in the PR for the milestone that **first introduced** it, at branch-HEAD state (with all audit fixes folded in). Files that grew across milestones (notably `hub/core.py`, `client/agent_client.py`, `client/plugin.py`, `views/builtin.py`, `task_mirror.py`) ship in their introducing PR with M2/M3/M4 hooks already present as inert code paths until later PRs land their callers/tests. This trades a small amount of "why is this here?" reviewer overhead for zero file churn between PRs.
-- **`design/`** is excluded from every PR. PLAN.md and the per-area design docs land separately (or stay branch-local) — they are internal references, not part of the V1 contract under review.
+- **Three sequential PRs**, each stacked on the previous (`PR1 ← PR2 ← PR3`). Independence between PRs is **not** maintained — PR2 branches off PR1, PR3 off PR2.
+- The split follows architectural layers, not development milestones:
+  - PR1 — the framework-core `Task` primitive (no network)
+  - PR2 — the network protocol + state + tenant-side control plane (no LLM-facing tool surface)
+  - PR3 — the LLM-facing tool surface + workflow orchestration + integration tests that drive agents through tools
+- **Cross-PR file modifications are minimised but unavoidable**: three files are slim in PR2 and modified in PR3 (`network/__init__.py`, `client/__init__.py`, `client/hub_client.py`). All other source files ship at branch-HEAD state in their introducing PR.
+- **`design/`** is excluded from every PR. PLAN.md and per-area design docs are internal references, not part of the V1 contract under review.
 
 ## PR table
 
-| PR | Title | Branches off | Source LOC* | Test LOC* | Total |
-|----|-------|--------------|------------:|----------:|------:|
-| PR1 | `feat(beta): Task primitive + network foundation (M1)` | `origin/main` | ~3,400 | ~510 | ~3.9K |
-| PR2 | `feat(beta/network): consulting loop (M2)` | PR1 | ~1,800 | ~325 | ~2.1K |
-| PR3 | `feat(beta/network): multi-party + observability (M3)` | PR2 | ~2,800 | ~2,815 | ~5.6K |
-| PR4 | `feat(beta/network): workflow orchestration (M4)` | PR3 | ~900 | ~2,650 | ~3.5K |
+| PR | Title topic | Branches off | Source LOC* | Test LOC* |
+|----|-------------|--------------|------------:|----------:|
+| PR1 | Task primitive (framework-core) | `origin/main` | ~700 | ~320 |
+| PR2 | Network protocol + state + control plane | PR1 | ~7K | ~3.5K |
+| PR3 | Session participation tools + workflow | PR2 | ~1.1K | ~2.5K |
 
-\* Approximate. Source LOC is the file-state ships in that PR; test LOC includes that PR's added test files and audit-regression tests where applicable.
+\* Approximate. PR2 ships the bulk of the source and adapter/expectation/observation tests. PR3 is mostly the LLM tool surface + tests that drive agents through tools.
 
-## PR1 — Task primitive + network foundation (M1)
+## PR1 — `Task` primitive (framework-core)
 
-**Goal:** ship the framework-core `Task` lifecycle primitive plus the network foundation (identity, transport, hub bare bones). No LLM yet — tested with raw envelopes through `LocalLink`.
+**Goal:** ship the framework-core lifecycle primitive any `Agent` can wrap work in. No network — bare `Agent` continues to work standalone with no behavioural change when `autogen.beta.network` is not imported.
 
-**Branch:** `feat/network-pr1-foundation` off `origin/main`.
+**Branch:** `feat/network-pr1-task` off `origin/main`.
 
-**Files (all at branch-HEAD state):**
+**Files:**
 
-Framework-core precondition:
 - `autogen/beta/__init__.py` (Task surface additions)
-- `autogen/beta/agent.py` (`agent.task(...)` + `add_policy()` public surface)
-- `autogen/beta/events/__init__.py` (TaskExpired export)
-- `autogen/beta/events/task_events.py` (TaskExpired, widened `result`, optional `spec`/`payload`)
-- `autogen/beta/task.py` (NEW)
-
-Network foundation:
-- `autogen/beta/network/__init__.py`
-- `autogen/beta/network/{ids,errors,policies,identity,auth,envelope,rule}.py`
-- `autogen/beta/network/transport/{__init__,frames,link,local}.py`
-- `autogen/beta/network/hub/{__init__,core,layout}.py`
-- `autogen/beta/network/client/{__init__,network_client,hub_client,agent_client}.py`
-
-Tests:
+- `autogen/beta/agent.py` (`agent.task(...)` + public `add_policy()`)
+- `autogen/beta/events/__init__.py` (export `TaskExpired`)
+- `autogen/beta/events/task_events.py` (`TaskExpired`, widened `TaskCompleted.result` to `Any`, optional `spec`/`payload`)
+- `autogen/beta/task.py` (NEW — `Task`, `TaskSpec`, `TaskState`, `TaskMetadata`, `TaskInject`)
 - `test/beta/test_task.py`
-- `test/beta/network/__init__.py`
-- `test/beta/network/test_foundation.py`
 
-**Exit criteria:** two `AgentClient`s register through `LocalLink` and exchange raw envelopes. `Hub.hydrate()` rebuilds passport/resume/rule caches from disk. Validated by `test_foundation.py` (5 tests) and `test_task.py` (22 tests).
-
-**Reviewer notes for PR1:**
-- `hub/core.py` is a large file (~1700 LOC) that includes routing hooks for adapters and observability features that are inert until PR2/PR3 ship the calling code. M1 tests exercise registration, raw envelope dispatch, and hydrate; the rest is structural scaffolding.
-- `client/{hub_client,agent_client}.py` likewise carry session/task client surfaces unused by M1 tests.
+**Exit criteria:** `agent.task(...)` lifecycle emits `TaskStarted` / `TaskProgress` / `TaskCompleted` / `TaskFailed` / `TaskExpired` events on a bound stream; `TaskInject` resolves to the active task inside the `async with` block. Validated by `test_task.py` (22 tests).
 
 **Validation command:**
 ```
-.venv-beta/bin/pytest test/beta/test_task.py test/beta/network/test_foundation.py -v
+.venv-beta/bin/pytest test/beta/test_task.py -v
 ```
 
-## PR2 — Consulting loop (M2)
+## PR2 — Network protocol + state + control plane
 
-**Goal:** first end-to-end LLM-driven session. One agent delegates a task to another via `delegate(target, prompt, blocking=True)`; the recipient's notify handler engages its LLM; the consulting auto-closes when the reply lands.
+**Goal:** ship the entire network module **except** the LLM-facing tool surface. After this PR, agents can register through a hub, exchange envelopes inside protocol-defined sessions (consulting / conversation / discussion / workflow), participate in turn-taking via the default notify handler, and observe each other's tasks — all by writing tenant code that calls `Session.send()` and similar methods directly. The 6 LLM-facing tools (`say`, `delegate`, `peers`, `sessions`, `tasks`, `context`) and `NetworkPlugin` arrive in PR3.
 
-**Branch:** `feat/network-pr2-consulting` off PR1.
+**Branch:** `feat/network-pr2-protocol` off PR1.
 
-**Files (all new in this PR, at branch-HEAD state):**
+**Files (all new in this PR):**
 
-Network adapters & views:
-- `autogen/beta/network/adapters/{__init__,base,consulting}.py`
-- `autogen/beta/network/views/{__init__,base,builtin}.py` (`FullTranscript` + `WindowedSummary` head)
-- `autogen/beta/network/session.py`
-- `autogen/beta/network/task_mirror.py`
-- `autogen/beta/network/hub/sweepers.py`
-
-Client surface:
-- `autogen/beta/network/client/{handlers,plugin,session,task,inject}.py`
-- `autogen/beta/network/client/tools/{__init__,say,delegate}.py`
-
-Tests:
-- `test/beta/network/test_consulting.py`
-
-**Exit criteria:** Alice's LLM calls `delegate(target="bob", prompt="...", blocking=True)`. Bob's notify handler runs Bob's LLM. Bob replies. Consulting auto-closes via the adapter's `on_accepted`. Validated by `test_consulting.py` (8 tests).
-
-**Reviewer notes for PR2:**
-- `views/builtin.py` ships `WindowedSummary` (added in M3) at HEAD state alongside `FullTranscript`. M2 tests only exercise `FullTranscript`; M3 tests will exercise `WindowedSummary`.
-- `client/handlers.py` includes M3-era observation wiring (record_observation hook) and M4-era handoff handling that won't fire under M2 tests.
-- `client/plugin.py` carries the workflow registration surface (`register_workflow`) inert until M4.
-
-**Validation command:**
-```
-.venv-beta/bin/pytest test/beta/network/test_consulting.py -v
-```
-
-## PR3 — Multi-party + observability (M3)
-
-**Goal:** full V1 surface for multi-party sessions, expectations, audit log, capability observation, and the 4 grouped LLM tools. Largest PR by LOC; the test count reflects six independent feature areas (3.1–3.5 cuts in PLAN.md).
-
-**Branch:** `feat/network-pr3-multiparty` off PR2.
-
-**Files (all new in this PR, at branch-HEAD state):**
-
-Adapters:
-- `autogen/beta/network/adapters/{conversation,discussion}.py`
+Network primitives and protocol:
+- `autogen/beta/network/__init__.py` (slim — re-exports the PR2 surface only)
+- `autogen/beta/network/{ids, errors, policies, identity, auth, envelope, rule, session, transitions, task_mirror}.py`
+- `autogen/beta/network/transport/{__init__, frames, link, local}.py`
+- `autogen/beta/network/views/{__init__, base, builtin}.py`
+- `autogen/beta/network/adapters/{__init__, base, consulting, conversation, discussion, workflow}.py`
 
 Hub:
-- `autogen/beta/network/hub/{audit,expectations}.py`
+- `autogen/beta/network/hub/{__init__, audit, core, expectations, layout, sweepers}.py`
 
-Client:
-- `autogen/beta/network/client/skill_render.py`
-- `autogen/beta/network/client/tools/{peers,sessions,tasks,context}.py`
+Client (control plane + session participation, no LLM tools):
+- `autogen/beta/network/client/__init__.py` (slim — no plugin/tools re-exports)
+- `autogen/beta/network/client/{network_client, agent_client, session, task, inject, handlers, skill_render}.py`
+- `autogen/beta/network/client/hub_client.py` (slim — no `.plugin` import; no plugin attachment in `register()`)
 
 Tests:
-- `test/beta/network/_helpers.py` (`_ScriptedConfig` for multi-turn LLM tests)
+- `test/beta/network/__init__.py`
+- `test/beta/network/_helpers.py`
+- `test/beta/network/test_foundation.py` (raw envelope round-trip + identity hydrate)
+- `test/beta/network/test_audit_and_lifecycle.py` (audit log + lifecycle invariants)
+- `test/beta/network/test_consulting.py` (consulting adapter end-to-end via `TestConfig`-mocked `Agent.ask`)
 - `test/beta/network/test_conversation.py`
 - `test/beta/network/test_discussion.py`
-- `test/beta/network/test_expectations.py`
+- `test/beta/network/test_expectations.py` (evaluator unit + handler integration via manual sweeper tick)
+- `test/beta/network/test_observation.py` (skill render + capability index + `TaskMirror` end-to-end)
 - `test/beta/network/test_hydrate_scale.py`
-- `test/beta/network/test_observation.py`
-- `test/beta/network/test_tools.py`
-- `test/beta/providers/anthropic/test_network_smoke.py`
 
-**Exit criteria:** five LLMs round-robin through a discussion via `say`; alice's LLM autonomously calls `peers(action="find", capability="math")` → `delegate(target="bob", ...)` → returns `"204"` for `"12 × 17"` (anthropic smoke). Per-(session, expectation, violator) dedup, audit log, capability observation, and skill rendering all exercised by the listed test files. Validated by 62 in-tree tests + 2 anthropic smoke tests.
+**Exit criteria:** two `AgentClient`s register through `LocalLink` and exchange raw envelopes; multi-party adapters run end-to-end driven by `TestConfig`-mocked LLM responses; expectation evaluators fire correctly; the audit log records the documented kinds; `Hub.hydrate()` correctness at 100×100 scale.
 
-**Reviewer notes for PR3:**
-- This is the heaviest PR. Reviewing by sub-area is encouraged: adapters → hub/expectations → hub/audit → client tools → tests.
-- `_helpers.py::_ScriptedConfig` exists because `autogen.beta.testing.TestConfig` resets its iterator on every `create()` call; multi-turn LLM-driven adapter tests need a persistent script cursor.
-- Hydrate scale test runs at 100 sessions × 100 envelopes (10K total). Bumping `ENVELOPES_PER_SESSION` runs the larger 100K sweep locally.
+**Reviewer notes for PR2:**
+- This is the largest PR. Reviewing by sub-area is encouraged: data types → adapters/views → hub → client.
+- `client/hub_client.py` is shipped as a slim version: it does not import `.plugin` and does not attach a `NetworkPlugin` in `register()`. PR3 adds five lines to enable plugin attachment.
+- `network/__init__.py` and `client/__init__.py` ship as slim versions: they re-export only what PR2 contributes. PR3 grows both with the LLM-tool surface re-exports.
+- Consulting / conversation / discussion tests use `TestConfig` and `_ScriptedConfig` to mock LLM responses — they exercise the default notify handler's LLM-driven response path **without** the LLM-facing tool surface.
 
 **Validation command:**
 ```
-.venv-beta/bin/pytest test/beta/network/test_conversation.py test/beta/network/test_discussion.py test/beta/network/test_expectations.py test/beta/network/test_hydrate_scale.py test/beta/network/test_observation.py test/beta/network/test_tools.py -v
-.venv-beta/bin/pytest -m anthropic test/beta/providers/anthropic/test_network_smoke.py -v   # ~$0.005 against haiku
+.venv-beta/bin/pytest test/beta/network/test_foundation.py test/beta/network/test_audit_and_lifecycle.py test/beta/network/test_consulting.py test/beta/network/test_conversation.py test/beta/network/test_discussion.py test/beta/network/test_expectations.py test/beta/network/test_observation.py test/beta/network/test_hydrate_scale.py -v
 ```
 
-## PR4 — Workflow orchestration (M4)
+## PR3 — LLM tool surface + workflow
 
-**Goal:** the orchestrator surface — successor for AG2-classic's `GroupChat` + `Handoffs` + `AfterWork`. Strictly additive on top of M3.
+**Goal:** ship the LLM-facing presentation layer of the network. `NetworkPlugin` attaches six grouped tools (`say` / `delegate` / `peers` / `sessions` / `tasks` / `context`) to an `Agent` so the LLM can drive its own session participation. Also ships workflow handoff tools so `WorkflowAdapter`'s `ToolCalled` transitions can be triggered by the LLM. After this PR, agents can autonomously discover, delegate to, and orchestrate each other.
 
-**Branch:** `feat/network-pr4-workflow` off PR3.
+**Branch:** `feat/network-pr3-tools` off PR2.
 
-**Files (all new in this PR, at branch-HEAD state):**
+**Files:**
 
-Network:
-- `autogen/beta/network/transitions.py`
-- `autogen/beta/network/adapters/workflow.py`
-- `autogen/beta/network/client/tools/handoff.py`
+New source files:
+- `autogen/beta/network/client/plugin.py` (`NetworkPlugin`, `NetworkContextPolicy`, `register_workflow`)
+- `autogen/beta/network/client/tools/__init__.py`
+- `autogen/beta/network/client/tools/{say, delegate, peers, sessions, tasks, context, handoff}.py`
+
+Modified files (re-exports + plugin attachment):
+- `autogen/beta/network/__init__.py` (add `NetworkContextPolicy`, `NetworkPlugin` to re-exports)
+- `autogen/beta/network/client/__init__.py` (add plugin + tool factories to re-exports)
+- `autogen/beta/network/client/hub_client.py` (add `from .plugin import NetworkPlugin`; attach `NetworkPlugin` in `register()` when `attach_plugin=True`)
 
 Tests:
-- `test/beta/network/test_workflow.py`
-- `test/beta/network/test_audit_and_lifecycle.py` (audit log + lifecycle invariants)
+- `test/beta/network/test_hub_invariants.py` (registration / concurrency / dispatch / projection invariants — uses `make_delegate_tool` for race + fast-fail tests)
+- `test/beta/network/test_tools.py` (per-action coverage of all 6 grouped tools)
 - `test/beta/network/test_sweeper_and_registry.py` (background sweeper + registry isolation + cross-tool flow)
-- `test/beta/network/test_hub_invariants.py` (registration / concurrency / dispatch / projection invariants)
+- `test/beta/network/test_workflow.py` (transition vocabulary unit + `WorkflowAdapter` integration + `register_workflow` handoff tools)
+- `test/beta/providers/anthropic/test_network_smoke.py`
 - `test/beta/providers/anthropic/test_workflow_smoke.py`
 
-**Exit criteria:** triage's LLM calls `transfer_to_eng` → eng's notify handler engages eng's LLM with the synthesised handoff prompt → eng's reply rotates control back to triage via `FromSpeaker(eng) → RevertToInitiatorTarget` → workflow state survives a mid-flow `Hub.hydrate()` → triage closes the session. Validated by `test_workflow.py` (26 tests) + `test_workflow_smoke.py` (1 anthropic test). Plus the audit / sweeper / hub-invariant regression files (~1.7K LOC) lock in invariants for the entire V1 surface.
+**Exit criteria:** Alice's LLM autonomously calls `peers(action="find", capability="math")` → `delegate(target="bob", ...)` → returns `"204"` for `"12 × 17"` (Anthropic smoke). Triage's LLM calls `transfer_to_eng` → eng's notify handler engages eng's LLM with the synthesised handoff prompt → eng's reply rotates control back to triage via `FromSpeaker(eng) → RevertToInitiatorTarget` → workflow state survives a mid-flow `Hub.hydrate()` → triage closes the session (Anthropic workflow smoke).
 
-**Reviewer notes for PR4:**
-- `EV_HANDOFF` (`ag2.handoff`) was added to `envelope.py` and `client/handlers.py` in PR1/PR2's at-HEAD versions; PR4 adds the *callers* (transitions + workflow adapter + handoff tool).
-- `client/plugin.py::register_workflow(graph)` is the user-facing convenience that materialises one tool per `ToolCalled` transition. The plugin code shipped in PR2; PR4 activates it.
-- `test_audit_and_lifecycle.py`, `test_sweeper_and_registry.py`, and `test_hub_invariants.py` are post-hoc regression suites covering the whole V1 surface, not the workflow code specifically. They land here because PR4 is the last in the stack.
+**Reviewer notes for PR3:**
+- The three modified files (`network/__init__.py`, `client/__init__.py`, `client/hub_client.py`) get small additive diffs that activate the surface PR2 already left a slot for.
+- `test_hub_invariants.py` ships here (not in PR2) because three of its tests use `make_delegate_tool` directly to exercise inbox-race and fast-fail scenarios — those depend on the tool's behaviour, not just on hub mechanics.
+- `_helpers.py` ships in PR2; this PR's tests reuse the same `_ScriptedConfig` helper.
 
 **Validation command:**
 ```
-.venv-beta/bin/pytest test/beta/network/test_workflow.py test/beta/network/test_audit_and_lifecycle.py test/beta/network/test_sweeper_and_registry.py test/beta/network/test_hub_invariants.py -v
-.venv-beta/bin/pytest -m anthropic test/beta/providers/anthropic/test_workflow_smoke.py -v   # ~$0.005 against haiku
+.venv-beta/bin/pytest test/beta/network/test_hub_invariants.py test/beta/network/test_tools.py test/beta/network/test_sweeper_and_registry.py test/beta/network/test_workflow.py -v
+.venv-beta/bin/pytest -m anthropic test/beta/providers/anthropic/test_network_smoke.py test/beta/providers/anthropic/test_workflow_smoke.py -v   # ~$0.01 against haiku
 ```
 
 ## Operational steps
 
-After the AGENTS.md compliance pass commit lands on `network-design`:
+After the cleanup commit (`fdf1179093`) is in place on `network-design`:
 
 ```bash
 # PR1
-git checkout -b feat/network-pr1-foundation origin/main
+git checkout --no-track -b feat/network-pr1-task origin/main
 git checkout network-design -- <PR1 file list>
-git commit -m "feat(beta): Task primitive + network foundation (M1)"
-git push -u origin feat/network-pr1-foundation
-gh pr create --base main --title "feat(beta): Task primitive + network foundation (M1)" --body-file design/pr_bodies/pr1.md
+git commit -m "feat(beta): add Task lifecycle primitive"
+git push -u origin feat/network-pr1-task
+gh pr create --base main --title "feat(beta): add Task lifecycle primitive" --body-file design/pr_bodies/pr1.md
 
-# PR2
-git checkout -b feat/network-pr2-consulting feat/network-pr1-foundation
+# PR2 (after PR1 lands or stacked on the branch)
+git checkout --no-track -b feat/network-pr2-protocol feat/network-pr1-task
 git checkout network-design -- <PR2 file list>
-git commit -m "feat(beta/network): consulting loop (M2)"
-git push -u origin feat/network-pr2-consulting
-gh pr create --base feat/network-pr1-foundation --title "feat(beta/network): consulting loop (M2)" --body-file design/pr_bodies/pr2.md
+# Apply slim versions of network/__init__.py, client/__init__.py, client/hub_client.py
+git commit -m "feat(beta/network): protocol, state, and control plane"
+git push -u origin feat/network-pr2-protocol
+gh pr create --base feat/network-pr1-task --title "feat(beta/network): protocol, state, and control plane" --body-file design/pr_bodies/pr2.md
 
-# Repeat for PR3, PR4. Each subsequent PR's --base is the previous PR's branch.
+# PR3
+git checkout --no-track -b feat/network-pr3-tools feat/network-pr2-protocol
+git checkout network-design -- <PR3 file list>
+# Apply HEAD versions of the three slim files
+git commit -m "feat(beta/network): LLM tool surface and workflow"
+git push -u origin feat/network-pr3-tools
+gh pr create --base feat/network-pr2-protocol --title "feat(beta/network): LLM tool surface and workflow" --body-file design/pr_bodies/pr3.md
 ```
 
-PR descriptions (`design/pr_bodies/pr{1,2,3,4}.md`) will be authored once each PR is ready. They follow this template:
+PR descriptions (`design/pr_bodies/pr{1,2,3}.md`) will be authored once each PR is ready. They follow this template:
 
 ```
 ## Summary
-<2-3 bullet points: what milestone, what features, what tests>
+<2-3 bullet points: what concern, what surface area, what tests>
 
 ## Test plan
 - [ ] `.venv-beta/bin/pytest <PR-specific test paths>`
@@ -211,32 +183,29 @@ PR descriptions (`design/pr_bodies/pr{1,2,3,4}.md`) will be authored once each P
 
 ```
 origin/main
-    └── PR1 (foundation)
-        └── PR2 (consulting)
-            └── PR3 (multi-party + observability)
-                └── PR4 (workflow + audit-regression tests)
+    └── PR1 (Task primitive)
+        └── PR2 (network protocol + state + control plane)
+            └── PR3 (LLM tool surface + workflow)
 ```
 
 When merging:
 1. PR1 lands → rebase PR2 onto `main`, fast-forward.
 2. PR2 lands → rebase PR3 onto `main`, fast-forward.
-3. PR3 lands → rebase PR4 onto `main`, fast-forward.
 
-GitHub UI handles the rebase if each PR is mergeable into the next. Squash-on-merge keeps `main` history at 4 commits.
+GitHub UI handles the rebase if each PR is mergeable into the next. Squash-on-merge keeps `main` history at 3 commits.
 
-## Pre-publish: AGENTS.md compliance pass
+## Slim files in PR2
 
-Before publishing PR1, a single commit on `network-design` brings the branch into AGENTS.md/CLAUDE.md compliance. Findings (full audit summary in conversation history):
+PR2 ships three files in slim form because PR3 adds the LLM tool surface that completes them. The diffs PR3 applies to these files are documented here so reviewers can see the upgrade path in advance.
 
-| Fix | Files |
-|-----|-------|
-| Replace global mutable `_default_registry` + `global` keyword | `network/transitions.py` |
-| Replace top-level `default_registry = AuthRegistry([NoAuth()])` constructor with classmethod or lazy init | `network/auth.py` |
-| Move function-level `from ..envelope import EV_TEXT` to module top | `network/hub/core.py` |
-| Add public `Agent.add_policy()` to remove private-attr access | `autogen/beta/agent.py`, `network/client/plugin.py` |
-| Complete `__all__` re-exports per submodule contracts | `network/__init__.py`, `network/hub/__init__.py` |
-| Remove unused `@runtime_checkable` from Protocols (none use isinstance) | `network/auth.py`, `network/transport/link.py`, `network/views/base.py`, `network/adapters/base.py`, `network/transitions.py`, `network/client/network_client.py`, `network/hub/expectations.py` |
+### `autogen/beta/network/__init__.py`
 
-Commit title: `fix(beta/network): pre-publish AGENTS.md compliance pass`.
+PR2 ships this file with the re-export block restricted to the symbols defined in PR2. PR3 adds re-exports for `NetworkContextPolicy`, `NetworkPlugin`, and the seven tool factory functions (`make_say_tool` / `make_delegate_tool` / `make_peers_tool` / `make_sessions_tool` / `make_tasks_tool` / `make_context_tool` / `make_handoff_tool` / `make_handoff_tools_for_graph`).
 
-These fixes ship at HEAD state of each affected file, so they land naturally in whichever PR ships that file.
+### `autogen/beta/network/client/__init__.py`
+
+PR2 ships this file with re-exports for `AgentClient`, `HubClient`, `NetworkClient`, `Session`, `ClientTask`, `default_handler`, dependency-injection annotations, and skill-render helpers. PR3 adds `NetworkPlugin`, `NetworkContextPolicy`, and the tool factories.
+
+### `autogen/beta/network/client/hub_client.py`
+
+PR2 ships this file without the `from .plugin import NetworkPlugin` import and without the `attach_plugin` parameter on `register()`. PR3 adds the import and the five-line block in `register()` that constructs a `NetworkPlugin` and attaches it to the agent.

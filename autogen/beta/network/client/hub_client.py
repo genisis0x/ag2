@@ -19,12 +19,15 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from autogen.beta.agent import Agent
+from autogen.beta.task import TaskMetadata, TaskState
 
 from ..envelope import Envelope
 from ..identity import Passport, Resume
 from ..rule import Rule
+from ..session import SessionMetadata, SessionState
 from ..transport.frames import NotifyFrame
 from ..transport.local import LocalLink, LocalLinkClient
+from ..views.base import ViewPolicy
 from .agent_client import AgentClient
 from .plugin import NetworkPlugin
 
@@ -155,7 +158,14 @@ class HubClient:
 
         return client
 
-    # ── Discovery passthrough ────────────────────────────────────────────────
+    # ── Hub control-plane passthrough ────────────────────────────────────────
+    #
+    # In V1 (LocalLink only) these forward directly to the in-process hub.
+    # Phase 3 swaps to frame-based RPC over WsLink; the call sites on
+    # ``AgentClient`` / handlers do not change. Holding the layering here
+    # is what keeps the Phase 3 migration small.
+
+    # — Discovery —
 
     async def get_agent(self, name_or_id: str) -> Passport:
         return await self._hub.get_agent(name_or_id)
@@ -179,6 +189,147 @@ class HubClient:
             query=query,
             sort_by=sort_by,
             limit=limit,
+        )
+
+    # — Identity mutation —
+
+    async def set_resume(self, agent_id: str, resume: Resume) -> None:
+        await self._hub.set_resume(agent_id, resume)
+
+    async def set_skill(self, agent_id: str, skill_md: str | None) -> None:
+        await self._hub.set_skill(agent_id, skill_md)
+
+    async def set_rule(self, agent_id: str, rule: Rule) -> None:
+        await self._hub.set_rule(agent_id, rule)
+
+    async def unregister_agent(self, agent_id: str) -> None:
+        await self._hub.unregister(agent_id)
+
+    # — Session control —
+
+    async def create_session(
+        self,
+        *,
+        creator_id: str,
+        manifest_type: str,
+        manifest_version: int = 1,
+        participants: list[str],
+        required_acks: int | None = None,
+        ttl: str | int | None = None,
+        knobs: dict[str, object] | None = None,
+        intent: str | None = None,
+        labels: dict[str, str] | None = None,
+    ) -> SessionMetadata:
+        return await self._hub.create_session(
+            creator_id=creator_id,
+            manifest_type=manifest_type,
+            manifest_version=manifest_version,
+            participants=participants,
+            required_acks=required_acks,
+            ttl=ttl,
+            knobs=knobs,
+            intent=intent,
+            labels=labels,
+        )
+
+    async def get_session(self, session_id: str) -> SessionMetadata:
+        return await self._hub.get_session(session_id)
+
+    async def list_sessions(
+        self,
+        *,
+        agent_id: str | None = None,
+        include_terminal: bool = False,
+        limit: int = 50,
+    ) -> list[SessionMetadata]:
+        results = await self._hub.list_sessions(agent_id=agent_id, limit=limit * 4)
+        if not include_terminal:
+            results = [
+                m for m in results
+                if m.state not in (SessionState.CLOSED, SessionState.EXPIRED)
+            ]
+        return results[:limit]
+
+    async def close_session(
+        self, session_id: str, *, reason: str = ""
+    ) -> SessionMetadata:
+        return await self._hub.close_session(session_id, reason=reason)
+
+    async def post_envelope(self, envelope: Envelope) -> str:
+        return await self._hub.post_envelope(envelope)
+
+    async def read_wal(
+        self, session_id: str, *, since: int = 0, until: int | None = None
+    ) -> list[Envelope]:
+        return await self._hub.read_wal(session_id, since=since, until=until)
+
+    def can_send(
+        self,
+        session_id: str,
+        sender_id: str,
+        *,
+        event_type: str | None = None,
+    ) -> bool:
+        return self._hub.can_send(session_id, sender_id, event_type=event_type)
+
+    def default_view_policy(
+        self, session_id: str, participant_id: str
+    ) -> ViewPolicy:
+        return self._hub.default_view_policy(session_id, participant_id)
+
+    # — Task observation (network is one observer) —
+
+    async def get_task(self, task_id: str) -> TaskMetadata:
+        return await self._hub.get_task(task_id)
+
+    async def list_tasks(
+        self,
+        *,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        state: TaskState | None = None,
+        limit: int = 50,
+    ) -> list[TaskMetadata]:
+        return await self._hub.list_tasks(
+            agent_id=agent_id,
+            session_id=session_id,
+            state=state,
+            limit=limit,
+        )
+
+    async def observe_task(self, metadata: TaskMetadata) -> None:
+        await self._hub.observe_task(metadata)
+
+    async def update_task(
+        self,
+        task_id: str,
+        *,
+        state: TaskState | None = None,
+        progress: dict[str, object] | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> None:
+        await self._hub.update_task(
+            task_id,
+            state=state,
+            progress=progress,
+            result=result,
+            error=error,
+        )
+
+    async def record_observation(
+        self,
+        *,
+        owner_id: str,
+        capability: str,
+        outcome: TaskState,
+        latency_ms: int | None = None,
+    ) -> None:
+        await self._hub.record_observation(
+            owner_id=owner_id,
+            capability=capability,
+            outcome=outcome,
+            latency_ms=latency_ms,
         )
 
     # ── Lifecycle ────────────────────────────────────────────────────────────

@@ -48,7 +48,7 @@ def _passport_summary(passport: Any, resume: Any) -> dict[str, Any]:
     }
 
 
-def make_peers_tool(client: "AgentClient") -> object:
+def make_peers_tool(agent_client: "AgentClient") -> object:
     """Return a closure-bound ``peers`` tool."""
 
     @tool
@@ -60,15 +60,15 @@ def make_peers_tool(client: "AgentClient") -> object:
         sort_by: Literal["name", "cost", "track_record"] | None = None,
         name: str | None = None,
         limit: int = 20,
-        ag_client: AgentClientInject = None,
+        client: AgentClientInject = None,
     ) -> list[dict] | dict | str:
         """Discover and describe peers.
 
         ``find``:    args query?, capability?, sort_by?, limit
         ``describe``: args name (or agent_id) → {passport, resume, skill_md}
         """
-        actual = ag_client if ag_client is not None else client
-        hub = actual._hub
+        actual = client if client is not None else agent_client
+        hub = actual._hub_client
         if action == "find":
             passports = await hub.list_agents(
                 capability=capability, query=query, limit=limit

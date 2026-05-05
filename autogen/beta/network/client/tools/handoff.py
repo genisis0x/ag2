@@ -44,7 +44,7 @@ __all__ = ("make_handoff_tool", "make_handoff_tools_for_graph")
 
 
 def make_handoff_tool(
-    client: "AgentClient",
+    agent_client: "AgentClient",
     tool_name: str,
     description: str | None = None,
 ) -> Any:
@@ -79,7 +79,7 @@ def make_handoff_tool(
 
 
 def make_handoff_tools_for_graph(
-    client: "AgentClient",
+    agent_client: "AgentClient",
     graph: TransitionGraph,
 ) -> list[Any]:
     """Materialise one handoff tool per unique ``ToolCalled`` condition
@@ -98,5 +98,5 @@ def make_handoff_tools_for_graph(
         if when.tool_name in seen:
             continue
         seen.add(when.tool_name)
-        tools.append(make_handoff_tool(client, when.tool_name))
+        tools.append(make_handoff_tool(agent_client, when.tool_name))
     return tools

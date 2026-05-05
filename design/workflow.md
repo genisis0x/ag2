@@ -14,13 +14,19 @@ The mechanic itself is what `discussion(round_robin)` already uses — `AdapterS
 # autogen/beta/network/transitions.py
 
 class TransitionTarget(Protocol):
-    """Where the next turn goes. Pure resolver — no I/O."""
+    """Where the next turn goes. Pure resolver — no I/O.
+
+    Takes only ``(state, envelope)``. ``WorkflowState`` carries
+    ``participant_order`` and ``creator_id`` (snapshotted at
+    ``initial_state``) so resolvers don't need ``SessionMetadata`` —
+    ``WorkflowAdapter.fold`` runs them in a context that has no
+    metadata access.
+    """
 
     name: ClassVar[str]                            # registry key
 
     def resolve(
         self,
-        metadata: SessionMetadata,
         state: WorkflowState,
         envelope: Envelope,
     ) -> TransitionDecision: ...
@@ -33,13 +39,15 @@ class TransitionDecision:
 
 
 class TransitionCondition(Protocol):
-    """When a transition fires. Pure predicate — no I/O."""
+    """When a transition fires. Pure predicate — no I/O.
+
+    Same ``(state, envelope)`` contract as ``TransitionTarget``.
+    """
 
     name: ClassVar[str]                            # registry key
 
     def evaluate(
         self,
-        metadata: SessionMetadata,
         state: WorkflowState,
         envelope: Envelope,
     ) -> bool: ...
@@ -57,9 +65,9 @@ class Transition:
 | Target | Args | Resolves to |
 |---|---|---|
 | `AgentTarget` | `agent_id: str` | the named agent |
-| `RoundRobinTarget` | — | next participant in `metadata.participants` `order` after `state.last_speaker_id` |
+| `RoundRobinTarget` | — | next participant in `state.participant_order` after `state.last_speaker_id` |
 | `StayTarget` | — | `state.last_speaker_id` |
-| `RevertToInitiatorTarget` | — | `metadata.creator_id` |
+| `RevertToInitiatorTarget` | — | `state.creator_id` |
 | `TerminateTarget` | `reason: str = "after_work"` | `next_speaker=None`, populates `close_reason` |
 
 `RandomTarget`, `LLMSelectorTarget`, and `NestedSessionTarget` are Phase 2 (see [Deferred](#deferred-to-phase-2)).
@@ -152,23 +160,21 @@ class WorkflowAdapter:
             )
 
     def on_accepted(self, metadata, envelope, state):
-        graph = TransitionGraph.loads(metadata.knobs["graph"])
+        graph = TransitionGraph.loads(state.graph_data)
         if graph.max_turns is not None and state.turn_count >= graph.max_turns:
             return AdapterResult(next_state=SessionState.CLOSED,
                                  auto_close_reason="max_turns")
-        decision = self._select(graph, metadata, state, envelope)
-        if decision.next_speaker is None:
+        if state.expected_next_speaker is None:
             return AdapterResult(next_state=SessionState.CLOSED,
-                                 auto_close_reason=decision.close_reason)
-        state.expected_next_speaker = decision.next_speaker
+                                 auto_close_reason=state.pending_close_reason)
         return AdapterResult()
 
     @staticmethod
-    def _select(graph, metadata, state, envelope) -> TransitionDecision:
+    def _select(graph, state, envelope) -> TransitionDecision:
         for tr in sorted(graph.transitions, key=lambda t: t.priority):
-            if tr.when.evaluate(metadata, state, envelope):
-                return tr.then.resolve(metadata, state, envelope)
-        return graph.default_target.resolve(metadata, state, envelope)
+            if tr.when.evaluate(state, envelope):
+                return tr.then.resolve(state, envelope)
+        return graph.default_target.resolve(state, envelope)
 ```
 
 The adapter is stateless and pure. All state lives in `WorkflowState`, folded from the WAL. `Hub.hydrate()` rebuilds it on restart by replaying the WAL through `fold` — same mechanism every other adapter uses.

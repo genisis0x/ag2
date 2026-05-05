@@ -56,7 +56,7 @@ def _task_summary(meta: Any) -> dict[str, Any]:
     }
 
 
-def make_tasks_tool(client: "AgentClient") -> object:
+def make_tasks_tool(agent_client: "AgentClient") -> object:
     """Return a closure-bound ``tasks`` tool."""
 
     @tool
@@ -73,7 +73,7 @@ def make_tasks_tool(client: "AgentClient") -> object:
         timeout: float = 300.0,
         poll_interval: float = 0.1,
         limit: int = 20,
-        ag_client: AgentClientInject = None,
+        client: AgentClientInject = None,
         active_task: TaskInject = None,
     ) -> dict | list[dict] | str:
         """Task lifecycle.
@@ -88,8 +88,8 @@ def make_tasks_tool(client: "AgentClient") -> object:
             ``wait``    args task_id, timeout=300, poll_interval=0.1
             ``cancel``  Phase 2 — returns an error placeholder in V1
         """
-        actual = ag_client if ag_client is not None else client
-        hub = actual._hub
+        actual = client if client is not None else agent_client
+        hub = actual._hub_client
 
         if action == "progress":
             if active_task is None:
@@ -110,16 +110,12 @@ def make_tasks_tool(client: "AgentClient") -> object:
             return f"completed {active_task.task_id}"
 
         if action == "list":
+            owner_filter = actual.agent_id if scope == "own" else None
+            metas = await hub.list_tasks(agent_id=owner_filter, limit=limit * 4)
+            terminal = {"completed", "failed", "expired", "cancelled"}
             results: list[dict] = []
-            for meta in hub._tasks.values():
-                if scope == "own" and meta.owner_id != actual.agent_id:
-                    continue
-                if state == "active" and meta.state.value in {
-                    "completed",
-                    "failed",
-                    "expired",
-                    "cancelled",
-                }:
+            for meta in metas:
+                if state == "active" and meta.state.value in terminal:
                     continue
                 results.append(_task_summary(meta))
                 if len(results) >= limit:

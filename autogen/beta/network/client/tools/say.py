@@ -24,12 +24,15 @@ if TYPE_CHECKING:
 __all__ = ("make_say_tool",)
 
 
-def make_say_tool(client: "AgentClient") -> object:
+def make_say_tool(agent_client: "AgentClient") -> object:
     """Return a closure-bound ``say`` tool.
 
-    The closure captures ``client`` once at registration; the resulting
-    ``FunctionTool`` is stable across turns (no nested-function
-    allocation in the hot path).
+    The closure captures ``agent_client`` once at registration; the
+    resulting ``FunctionTool`` is stable across turns (no nested
+    allocation in the hot path). The LLM-facing parameter is
+    ``client: AgentClientInject`` — the framework resolves it from
+    ``context.dependencies`` when the tool runs inside a notify
+    handler; the closure binding is the fallback for direct invocation.
     """
 
     @tool
@@ -39,7 +42,7 @@ def make_say_tool(client: "AgentClient") -> object:
         audience: list[str] | None = None,
         session_id: str | None = None,
         session: SessionInject = None,
-        ag_client: AgentClientInject = None,
+        client: AgentClientInject = None,
     ) -> str:
         """Post a text envelope into the current (or specified) session.
 
@@ -51,13 +54,13 @@ def make_say_tool(client: "AgentClient") -> object:
         """
         # Resolve the session handle.
         target_session = session
-        actual_client = ag_client if ag_client is not None else client
+        actual_client = client if client is not None else agent_client
 
         if target_session is None:
             if session_id is None:
                 return "Error: no current session and no session_id provided"
             try:
-                metadata = await actual_client._hub.get_session(session_id)
+                metadata = await actual_client._hub_client.get_session(session_id)
             except Exception as exc:
                 return f"Error: session {session_id!r} not found: {exc}"
             target_session = Session(metadata=metadata, client=actual_client)
@@ -68,7 +71,7 @@ def make_say_tool(client: "AgentClient") -> object:
             audience_ids = []
             for name in audience:
                 try:
-                    passport = await actual_client._hub.get_agent(name)
+                    passport = await actual_client._hub_client.get_agent(name)
                 except Exception:
                     return f"Error: peer {name!r} not found"
                 if passport.agent_id is None:

@@ -92,11 +92,20 @@ class InboxBlock:
 
 @dataclass(slots=True)
 class LimitsBlock:
-    """Concurrency caps + parsed duration TTLs + failure-mode thresholds.
+    """Concurrency caps + parsed duration TTLs.
 
     ``0`` disables a numeric cap. Duration strings are parsed via
     :func:`parse_duration`; values may be passed pre-parsed as ``int``
     seconds.
+
+    V1 does not enforce per-tenant ``peer_heartbeat_timeout`` /
+    ``task_stall_threshold`` / ``session_idle_threshold``: peer
+    reachability needs the WebSocket transport (Phase 3); session
+    idle is covered by ``max_silence`` declared on a manifest's
+    ``expectations``; task stall surfacing is Phase 2 (per-task
+    ``last_progress_at`` cadence). The fields are intentionally
+    omitted from ``LimitsBlock`` so callers don't construct rules
+    that look enforced but aren't.
     """
 
     max_concurrent_sessions: int = 0
@@ -106,11 +115,6 @@ class LimitsBlock:
     rate: RateBlock = field(default_factory=RateBlock)
     delegation_depth: int = 5
     inbox: InboxBlock = field(default_factory=InboxBlock)
-
-    # Failure-mode thresholds (M3 sweepers honour these)
-    peer_heartbeat_timeout: str = "30s"
-    task_stall_threshold: str = "60s"
-    session_idle_threshold: str = "5m"
 
 
 @dataclass(slots=True)

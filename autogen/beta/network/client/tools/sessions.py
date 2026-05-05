@@ -55,7 +55,7 @@ def _metadata_dict(metadata: Any) -> dict[str, Any]:
     }
 
 
-def make_sessions_tool(client: "AgentClient") -> object:
+def make_sessions_tool(agent_client: "AgentClient") -> object:
     """Return a closure-bound ``sessions`` tool."""
 
     @tool
@@ -69,7 +69,7 @@ def make_sessions_tool(client: "AgentClient") -> object:
         ttl: str | int | None = None,
         session_id: str | None = None,
         state: Literal["active", "all"] = "active",
-        ag_client: AgentClientInject = None,
+        client: AgentClientInject = None,
         current: SessionInject = None,
     ) -> list[dict] | dict | str:
         """Session lifecycle.
@@ -79,24 +79,23 @@ def make_sessions_tool(client: "AgentClient") -> object:
         ``info``:  args session_id
         ``close``: args session_id? (defaults to current)
         """
-        actual = ag_client if ag_client is not None else client
-        hub = actual._hub
+        actual = client if client is not None else agent_client
+        hub = actual._hub_client
 
         if action == "list":
             include_terminal = state == "all"
-            results: list[dict] = []
-            for meta in hub._sessions.values():
-                if not include_terminal and meta.is_terminal():
-                    continue
-                if not any(p.agent_id == actual.agent_id for p in meta.participants):
-                    continue
-                results.append({
-                    "session_id": meta.session_id,
-                    "type": meta.manifest.type,
-                    "state": meta.state.value,
-                    "participants": [p.agent_id for p in meta.participants],
-                })
-            return results
+            metas = await hub.list_sessions(
+                agent_id=actual.agent_id, include_terminal=include_terminal
+            )
+            return [
+                {
+                    "session_id": m.session_id,
+                    "type": m.manifest.type,
+                    "state": m.state.value,
+                    "participants": [p.agent_id for p in m.participants],
+                }
+                for m in metas
+            ]
 
         if action == "open":
             if not type or not target:

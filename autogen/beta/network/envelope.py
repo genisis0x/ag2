@@ -19,26 +19,14 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 __all__ = (
-    "EV_ERROR",
     "EV_EXPECTATION_VIOLATED",
-    "EV_PARTICIPANT_REMOVED",
-    "EV_PEER_RECONNECTED",
-    "EV_PEER_UNREACHABLE",
+    "EV_HANDOFF",
     "EV_SESSION_CLOSED",
     "EV_SESSION_EXPIRED",
-    "EV_SESSION_IDLE",
     "EV_SESSION_INVITE",
     "EV_SESSION_INVITE_ACK",
     "EV_SESSION_INVITE_REJECT",
     "EV_SESSION_OPENED",
-    "EV_SESSION_QUORUM_CHANGED",
-    "EV_TASK_ERROR",
-    "EV_TASK_EXPIRED",
-    "EV_TASK_PROGRESS",
-    "EV_TASK_RESULT",
-    "EV_TASK_STALLED",
-    "EV_TASK_STARTED",
-    "EV_HANDOFF",
     "EV_TEXT",
     "Envelope",
     "Priority",
@@ -68,23 +56,18 @@ EV_SESSION_INVITE_REJECT = "ag2.session.invite.reject"
 EV_SESSION_OPENED = "ag2.session.opened"
 EV_SESSION_CLOSED = "ag2.session.closed"
 EV_SESSION_EXPIRED = "ag2.session.expired"
-EV_SESSION_IDLE = "ag2.session.idle"
-EV_SESSION_QUORUM_CHANGED = "ag2.session.quorum_changed"
-
-EV_TASK_STARTED = "ag2.task.started"
-EV_TASK_PROGRESS = "ag2.task.progress"
-EV_TASK_RESULT = "ag2.task.result"
-EV_TASK_ERROR = "ag2.task.error"
-EV_TASK_EXPIRED = "ag2.task.expired"
-EV_TASK_STALLED = "ag2.task.stalled"
-
-EV_PEER_UNREACHABLE = "ag2.peer.unreachable"
-EV_PEER_RECONNECTED = "ag2.peer.reconnected"
 
 EV_EXPECTATION_VIOLATED = "ag2.expectation.violated"
-EV_PARTICIPANT_REMOVED = "ag2.participant.removed"
 
-EV_ERROR = "ag2.error"
+# Phase 2/3 event types removed from V1: ``EV_SESSION_IDLE``,
+# ``EV_SESSION_QUORUM_CHANGED``, ``EV_TASK_*``, ``EV_PEER_*``,
+# ``EV_PARTICIPANT_REMOVED``, ``EV_ERROR``. None of them were emitted
+# by the hub. ``max_silence`` expectations cover idle-detection;
+# task lifecycle is mirrored as Python events on the agent's own
+# stream (see :mod:`autogen.beta.network.task_mirror`); peer
+# reachability needs the WebSocket transport (Phase 3); participant
+# removal needs the ``remove`` violation handler (Phase 2). Re-add
+# the constant in the same milestone the producer ships.
 
 
 @dataclass(slots=True)

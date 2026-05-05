@@ -14,6 +14,7 @@
 
 import asyncio
 from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from autogen.beta import Context
@@ -22,7 +23,23 @@ from autogen.beta.events import BaseEvent, ModelMessage, ModelResponse
 
 from autogen.beta.network import EV_TEXT, Envelope, Hub
 
-__all__ = ("ScriptedConfig", "wait_for_text_count")
+__all__ = ("ScriptedConfig", "_MockClock", "wait_for_text_count")
+
+
+class _MockClock:
+    """Controllable clock — returns a stored ISO timestamp; ``advance``
+    pushes it forward by ``seconds``."""
+
+    def __init__(self, start: str = "2026-01-01T00:00:00+00:00") -> None:
+        self._now = datetime.fromisoformat(start)
+        if self._now.tzinfo is None:
+            self._now = self._now.replace(tzinfo=timezone.utc)
+
+    def __call__(self) -> str:
+        return self._now.isoformat()
+
+    def advance(self, seconds: float) -> None:
+        self._now = self._now + timedelta(seconds=seconds)
 
 
 class ScriptedConfig(ModelConfig):

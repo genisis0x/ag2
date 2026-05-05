@@ -61,7 +61,7 @@ async def read_wal_until(client: "AgentClient", envelope: Envelope) -> list[Enve
     ``agent.ask`` separately rather than mixed into the projected
     history.
     """
-    wal = await client._hub.read_wal(envelope.session_id)
+    wal = await client._hub_client.read_wal(envelope.session_id)
     history: list[Envelope] = []
     for env in wal:
         if env.envelope_id == envelope.envelope_id:
@@ -75,8 +75,9 @@ def resolve_view_policy(
     metadata: SessionMetadata,
 ) -> ViewPolicy:
     """Return the adapter's default view policy for this participant."""
-    adapter = client._hub._adapter_for(metadata.manifest.type, metadata.manifest.version)
-    return adapter.default_view_policy(metadata, client.agent_id)
+    return client._hub_client.default_view_policy(
+        metadata.session_id, client.agent_id
+    )
 
 
 def stamp_dependencies(
@@ -144,25 +145,13 @@ async def _process_text(envelope: Envelope, client: "AgentClient") -> None:
     each turn the adapter rotates so this same handler firing for a
     different participant's notify is a no-op via the probe.
     """
-    metadata = await client._hub.get_session(envelope.session_id)
+    metadata = await client._hub_client.get_session(envelope.session_id)
     if metadata.is_terminal() or metadata.state != SessionState.ACTIVE:
         return
 
-    # "Can we respond now?" — ask the adapter via a probe send.
-    state = client._hub._adapter_states.get(envelope.session_id)
-    if state is None:
-        return
-    adapter = client._hub._adapter_for(metadata.manifest.type, metadata.manifest.version)
-    probe = Envelope(
-        session_id=envelope.session_id,
-        sender_id=client.agent_id,
-        audience=None,
-        event_type=EV_TEXT,
-        event_data={"text": ""},
-    )
-    try:
-        adapter.validate_send(metadata, probe, state)
-    except Exception:
+    # "Can we respond now?" — ask the hub via the public probe surface
+    # so the handler doesn't need to reach into adapter internals.
+    if not client._hub_client.can_send(envelope.session_id, client.agent_id):
         return  # not our turn / session closing — don't engage LLM
 
     session = Session(metadata=metadata, client=client)
@@ -194,7 +183,7 @@ async def _process_text(envelope: Envelope, client: "AgentClient") -> None:
     # tool) surfaces ``ag2.task.*`` envelopes to the hub and triggers
     # ``record_observation`` on capability-tagged terminal events.
     mirror = TaskMirror(
-        hub=client._hub,
+        hub_client=client._hub_client,
         owner_id=client.agent_id,
         session_id=metadata.session_id,
     )

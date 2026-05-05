@@ -437,6 +437,111 @@ async def test_task_mirror_records_observation_on_capability_tagged_task() -> No
 
 
 @pytest.mark.asyncio
+async def test_record_observation_writes_audit_with_observed_source() -> None:
+    """Hub-side observation mutations are auditable as ``resume_set``
+    records with ``source="observed"``, distinct from tenant-driven
+    ``set_resume`` calls (``source="tenant"``)."""
+    from autogen.beta.network.hub.audit import (
+        AUDIT_KIND_RESUME_SET,
+        RESUME_SOURCE_OBSERVED,
+        RESUME_SOURCE_TENANT,
+    )
+
+    store = MemoryKnowledgeStore()
+    hub = await Hub.open(store, ttl_sweep_interval=0, expectation_sweep_interval=0)
+    link = LocalLink(hub)
+
+    bob_hc = HubClient(link, hub=hub)
+    bob = await bob_hc.register(
+        _agent("bob"),
+        Passport(name="bob"),
+        Resume(claimed_capabilities=["analysis"]),
+    )
+
+    pre_audit = len(await hub._audit_log.read_all())
+
+    # Tenant-driven update.
+    await bob_hc._hub.set_resume(bob.agent_id, Resume(summary="updated by tenant"))
+    # Hub-driven observation.
+    await hub.record_observation(
+        owner_id=bob.agent_id,
+        capability="analysis",
+        outcome=TaskState.COMPLETED,
+        latency_ms=42,
+    )
+
+    audit = await hub._audit_log.read_all()
+    new_records = audit[pre_audit:]
+    resume_records = [r for r in new_records if r["kind"] == AUDIT_KIND_RESUME_SET]
+
+    sources = [r.get("source") for r in resume_records]
+    assert RESUME_SOURCE_TENANT in sources
+    assert RESUME_SOURCE_OBSERVED in sources
+
+    observed = next(r for r in resume_records if r.get("source") == RESUME_SOURCE_OBSERVED)
+    assert observed["agent_id"] == bob.agent_id
+    assert observed["capability"] == "analysis"
+    assert observed["outcome"] == TaskState.COMPLETED.value
+
+    await bob_hc.close()
+    await hub.close()
+
+
+@pytest.mark.asyncio
+async def test_task_capability_survives_hub_hydrate() -> None:
+    """``TaskSpec.capability`` round-trips through hub persistence so an
+    observation can fire on a terminal event after a hub restart.
+
+    Pre-fix: ``_task_metadata_to_dict`` dropped ``capability``; on
+    hydrate the spec came back with ``capability=None`` and
+    ``record_observation`` wouldn't fire even after the task terminated.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from autogen.beta import Context
+    from autogen.beta.network.task_mirror import TaskMirror
+    from autogen.beta.stream import MemoryStream
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = DiskKnowledgeStore(Path(tmpdir))
+        hub = await Hub.open(store, ttl_sweep_interval=0, expectation_sweep_interval=0)
+        link = LocalLink(hub)
+        bob_hc = HubClient(link, hub=hub)
+        bob_agent = Agent(name="bob", config=ScriptedConfig("ack"))
+        bob = await bob_hc.register(
+            bob_agent,
+            Passport(name="bob"),
+            Resume(claimed_capabilities=["analysis"]),
+        )
+
+        # Start a capability-tagged task; mirror persists metadata.
+        stream = MemoryStream()
+        mirror = TaskMirror(hub=hub, owner_id=bob.agent_id)
+        sub_ids = mirror.attach(stream)
+        async with bob_agent.task(
+            "analysing",
+            capability="analysis",
+            context=Context(stream=stream),
+        ) as task:
+            task_id = task.task_id
+            await task.complete(result="done")
+        mirror.detach(stream, sub_ids)
+
+        await bob_hc.close()
+        await hub.close()
+
+        # Restart: new Hub, same store. ``_load_task`` rehydrates
+        # TaskMetadata; the spec must preserve ``capability``.
+        hub2 = await Hub.open(
+            store, ttl_sweep_interval=0, expectation_sweep_interval=0
+        )
+        rehydrated = hub2._tasks[task_id]
+        assert rehydrated.spec.capability == "analysis"
+        await hub2.close()
+
+
+@pytest.mark.asyncio
 async def test_task_mirror_no_observation_when_capability_absent() -> None:
     """Untagged tasks emit lifecycle events but don't touch ``observed``."""
     from autogen.beta import Context

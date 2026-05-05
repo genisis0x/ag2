@@ -57,6 +57,6 @@ class ClientTask:
 
     async def info(self) -> TaskMetadata:
         """Re-fetch metadata from the hub."""
-        refreshed = await self._client._hub.get_task(self.task_id)
+        refreshed = await self._client._hub_client.get_task(self.task_id)
         self._metadata = refreshed
         return refreshed

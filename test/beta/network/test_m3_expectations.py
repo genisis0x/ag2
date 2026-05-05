@@ -21,7 +21,7 @@ disabled (``expectation_sweep_interval=0``); tests call
 ``hub._expectation_tick()`` explicitly.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import pytest
 
@@ -67,6 +67,8 @@ from autogen.beta.network.session import (
 )
 from autogen.beta.testing import TestConfig
 
+from ._helpers import _MockClock
+
 
 def _agent(name: str, *events: object) -> Agent:
     return Agent(name=name, config=TestConfig(*events))
@@ -78,22 +80,6 @@ async def _silent_handler(_envelope: Envelope) -> None:
     Used to drive expectation paths that depend on a participant
     *not* responding (e.g. ``acks_within`` / ``reply_within`` tests).
     """
-
-
-class _MockClock:
-    """Controllable clock — returns a stored ISO timestamp; ``advance``
-    pushes it forward by ``seconds``."""
-
-    def __init__(self, start: str = "2026-01-01T00:00:00+00:00") -> None:
-        self._now = datetime.fromisoformat(start)
-        if self._now.tzinfo is None:
-            self._now = self._now.replace(tzinfo=timezone.utc)
-
-    def __call__(self) -> str:
-        return self._now.isoformat()
-
-    def advance(self, seconds: float) -> None:
-        self._now = self._now + timedelta(seconds=seconds)
 
 
 def _conv_metadata(

@@ -10,7 +10,13 @@ V1 writes to a single ``audit.jsonl`` indefinitely under the hub's
 The audit log records hub-cross-cutting events that are not visible
 on per-session WALs:
 
-* Identity changes — register, unregister, set_resume, set_skill, set_rule
+* Identity changes — register, unregister, set_resume (with ``source``:
+  ``"tenant"`` for ``set_resume`` calls, ``"observed"`` for
+  ``record_observation``), set_skill, set_rule
+* Session lifecycle — created, closed, expired (one record per
+  terminal transition)
+* Task lifecycle — terminated (completed / failed / expired) for tasks
+  the hub observed (mirrored from agent ``Task*`` events)
 * Expectation violations — one record per (session, expectation, violator)
   fire (the sweeper deduplicates so handlers don't re-record)
 
@@ -30,7 +36,13 @@ __all__ = (
     "AUDIT_KIND_EXPECTATION_VIOLATED",
     "AUDIT_KIND_RESUME_SET",
     "AUDIT_KIND_RULE_SET",
+    "AUDIT_KIND_SESSION_CLOSED",
+    "AUDIT_KIND_SESSION_CREATED",
+    "AUDIT_KIND_SESSION_EXPIRED",
     "AUDIT_KIND_SKILL_SET",
+    "AUDIT_KIND_TASK_TERMINATED",
+    "RESUME_SOURCE_OBSERVED",
+    "RESUME_SOURCE_TENANT",
     "AuditLog",
 )
 
@@ -41,6 +53,14 @@ AUDIT_KIND_RESUME_SET = "resume_set"
 AUDIT_KIND_RULE_SET = "rule_set"
 AUDIT_KIND_SKILL_SET = "skill_set"
 AUDIT_KIND_EXPECTATION_VIOLATED = "expectation_violated"
+AUDIT_KIND_SESSION_CREATED = "session_created"
+AUDIT_KIND_SESSION_CLOSED = "session_closed"
+AUDIT_KIND_SESSION_EXPIRED = "session_expired"
+AUDIT_KIND_TASK_TERMINATED = "task_terminated"
+
+# ``source`` values for ``resume_set`` audit records.
+RESUME_SOURCE_TENANT = "tenant"
+RESUME_SOURCE_OBSERVED = "observed"
 
 
 class AuditLog:

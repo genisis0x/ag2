@@ -82,6 +82,12 @@ class AgentClient:
         # used by ``delegate`` while it owns the session lifecycle.
         self._handler_suppressed_sessions: set[str] = set()
 
+        # Stack of envelopes currently being handled. The top of the
+        # stack is the envelope this agent is processing right now;
+        # ``delegate`` reads its ``depth`` to stamp the outgoing prompt
+        # for delegation-depth enforcement (Rule.limits.delegation_depth).
+        self._handling_envelope_stack: list[Envelope] = []
+
     # ── Properties ───────────────────────────────────────────────────────────
 
     @property
@@ -133,8 +139,30 @@ class AgentClient:
         self._on_envelope = None
 
     async def _run_default_handler(self, envelope: Envelope) -> None:
-        """Bound-method wrapper around :func:`handlers.default_handler`."""
-        await default_handler(envelope, self)
+        """Bound-method wrapper around :func:`handlers.default_handler`.
+
+        Pushes the inbound envelope onto the handling stack so any
+        ``delegate``/``sessions.open`` invoked from inside the LLM turn
+        can stamp ``Envelope.depth = outer.depth + 1`` and the hub can
+        enforce ``Rule.limits.delegation_depth``.
+        """
+        self._handling_envelope_stack.append(envelope)
+        try:
+            await default_handler(envelope, self)
+        finally:
+            self._handling_envelope_stack.pop()
+
+    @property
+    def current_handling_depth(self) -> int:
+        """Depth of the envelope this agent is currently handling.
+
+        Returns ``0`` when no handler is on the stack (i.e. the agent
+        initiated the call from outside any inbound delivery). Used by
+        ``delegate`` to stamp ``Envelope.depth = current + 1``.
+        """
+        if not self._handling_envelope_stack:
+            return 0
+        return self._handling_envelope_stack[-1].depth
 
     # ── Session lifecycle ────────────────────────────────────────────────────
 
@@ -150,9 +178,9 @@ class AgentClient:
     ) -> Session:
         """Open a session via the hub and return its :class:`Session` handle.
 
-        ``target`` accepts peer **names** or agent_ids; this method
-        resolves names via ``hub.get_agent``. Awaits the hub's
-        invite/ack handshake before returning.
+        ``target`` accepts peer **names** or agent_ids; resolution goes
+        through the bound :class:`HubClient` so V1 (in-process) and
+        Phase 3 (cross-process WS) take the same code path.
         """
         if self._disconnected:
             raise RuntimeError("AgentClient is disconnected")
@@ -160,12 +188,12 @@ class AgentClient:
         targets = [target] if isinstance(target, str) else list(target)
         target_ids: list[str] = []
         for t in targets:
-            passport = await self._hub.get_agent(t)
+            passport = await self._hub_client.get_agent(t)
             if passport.agent_id is None:
                 raise RuntimeError(f"target {t!r} has no agent_id")
             target_ids.append(passport.agent_id)
 
-        metadata = await self._hub.create_session(
+        metadata = await self._hub_client.create_session(
             creator_id=self.agent_id,
             manifest_type=type,
             participants=target_ids,
@@ -227,14 +255,14 @@ class AgentClient:
             raise RuntimeError("AgentClient is disconnected")
         if envelope.sender_id == "":
             envelope.sender_id = self.agent_id
-        return await self._hub.post_envelope(envelope)
+        return await self._hub_client.post_envelope(envelope)
 
     # ── Tenant-driven mutation ───────────────────────────────────────────────
 
     async def set_resume(self, resume: Resume) -> None:
-        await self._hub.set_resume(self.agent_id, resume)
+        await self._hub_client.set_resume(self.agent_id, resume)
         # Refresh local cache so subsequent reads see the bumped version.
-        self._resume = await self._hub.get_resume(self.agent_id)
+        self._resume = await self._hub_client.get_resume(self.agent_id)
 
     async def add_example(self, example: ResumeExample) -> None:
         """Append a ``ResumeExample`` to this agent's resume.
@@ -243,18 +271,18 @@ class AgentClient:
         ``set_resume`` / ``record_observation`` updates don't get
         clobbered.
         """
-        current = await self._hub.get_resume(self.agent_id)
+        current = await self._hub_client.get_resume(self.agent_id)
         current.examples.append(example)
         await self.set_resume(current)
 
     async def set_skill(self, skill_md: str | None) -> None:
-        await self._hub.set_skill(self.agent_id, skill_md)
+        await self._hub_client.set_skill(self.agent_id, skill_md)
 
     async def set_rule(self, rule: Rule) -> None:
-        await self._hub.set_rule(self.agent_id, rule)
+        await self._hub_client.set_rule(self.agent_id, rule)
         self._rule = rule
 
     async def unregister(self) -> None:
         if not self._disconnected:
-            await self._hub.unregister(self.agent_id)
+            await self._hub_client.unregister_agent(self.agent_id)
             self._disconnected = True

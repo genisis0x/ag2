@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 __all__ = ("make_delegate_tool",)
 
 
-def make_delegate_tool(client: "AgentClient") -> object:
+def make_delegate_tool(agent_client: "AgentClient") -> object:
     """Return a closure-bound ``delegate`` tool."""
 
     @tool
@@ -38,7 +38,7 @@ def make_delegate_tool(client: "AgentClient") -> object:
         *,
         capability: str | None = None,
         timeout: float = 300.0,
-        ag_client: AgentClientInject = None,
+        client: AgentClientInject = None,
     ) -> str:
         """Open a one-shot consulting session with ``target`` and return its reply.
 
@@ -51,11 +51,11 @@ def make_delegate_tool(client: "AgentClient") -> object:
         Returns the reply text on success, or an ``Error: ...`` string
         on failure (target unknown, timeout, session rejected, etc.).
         """
-        actual_client = ag_client if ag_client is not None else client
+        actual_client = client if client is not None else agent_client
 
         # Resolve target.
         try:
-            target_passport = await actual_client._hub.get_agent(target)
+            target_passport = await actual_client._hub_client.get_agent(target)
         except Exception:
             return f"Error: target {target!r} not found"
         target_id = target_passport.agent_id
@@ -78,9 +78,15 @@ def make_delegate_tool(client: "AgentClient") -> object:
         # on the reply envelope when it lands.
         actual_client._suppress_handler(session.session_id)
         try:
-            # Send the prompt as the initiator's turn.
+            # Send the prompt as the initiator's turn. ``depth`` is
+            # stamped from the outer handler's depth + 1 so the hub can
+            # enforce ``Rule.limits.delegation_depth``.
             try:
-                await session.send(prompt, audience=[target_id])
+                await session.send(
+                    prompt,
+                    audience=[target_id],
+                    depth=actual_client.current_handling_depth + 1,
+                )
             except Exception as exc:
                 return f"Error: prompt send failed: {exc}"
 

@@ -52,6 +52,7 @@ __all__ = (
     "TransitionCondition",
     "TransitionDecision",
     "TransitionGraph",
+    "TransitionRegistry",
     "TransitionTarget",
     "WorkflowGraphError",
     "register_condition",
@@ -218,36 +219,104 @@ class ToolCalled:
         return envelope.event_data.get("tool") == self.tool_name
 
 
-# ── Registries ──────────────────────────────────────────────────────────────
+# ── Registry ────────────────────────────────────────────────────────────────
 
 
-_TARGET_REGISTRY: dict[str, type[TransitionTarget]] = {
-    AgentTarget.name: AgentTarget,
-    RoundRobinTarget.name: RoundRobinTarget,
-    StayTarget.name: StayTarget,
-    RevertToInitiatorTarget.name: RevertToInitiatorTarget,
-    TerminateTarget.name: TerminateTarget,
-}
+_BUILTIN_TARGETS: tuple[type[TransitionTarget], ...] = (
+    AgentTarget,
+    RoundRobinTarget,
+    StayTarget,
+    RevertToInitiatorTarget,
+    TerminateTarget,
+)
 
-_CONDITION_REGISTRY: dict[str, type[TransitionCondition]] = {
-    Always.name: Always,
-    FromSpeaker.name: FromSpeaker,
-    ToolCalled.name: ToolCalled,
-}
+_BUILTIN_CONDITIONS: tuple[type[TransitionCondition], ...] = (
+    Always,
+    FromSpeaker,
+    ToolCalled,
+)
+
+
+class TransitionRegistry:
+    """Per-(process, instance) registry of transition target / condition classes.
+
+    Constructed pre-populated with V1 built-ins
+    (``AgentTarget`` / ``RoundRobinTarget`` / ... and
+    ``Always`` / ``FromSpeaker`` / ``ToolCalled``).
+
+    Tests / multi-tenant callers that need isolation construct their
+    own and pass to ``TransitionGraph.loads(data, registry=)``. The
+    module-level ``register_target`` / ``register_condition`` helpers
+    delegate to a lazily-initialised default singleton —
+    :func:`default_transition_registry` — for the common single-tenant
+    case.
+    """
+
+    def __init__(self) -> None:
+        self._targets: dict[str, type[TransitionTarget]] = {
+            cls.name: cls for cls in _BUILTIN_TARGETS
+        }
+        self._conditions: dict[str, type[TransitionCondition]] = {
+            cls.name: cls for cls in _BUILTIN_CONDITIONS
+        }
+
+    def register_target(self, target_cls: type[TransitionTarget]) -> None:
+        """Register a custom :class:`TransitionTarget`. Re-registers replace."""
+        self._targets[target_cls.name] = target_cls
+
+    def register_condition(self, condition_cls: type[TransitionCondition]) -> None:
+        """Register a custom :class:`TransitionCondition`. Re-registers replace."""
+        self._conditions[condition_cls.name] = condition_cls
+
+    def target_from_dict(self, data: dict[str, Any] | None) -> TransitionTarget:
+        if data is None:
+            return TerminateTarget()
+        cls = self._targets.get(data["name"])
+        if cls is None:
+            raise WorkflowGraphError(
+                f"no transition target registered for {data['name']!r}"
+            )
+        return cls(**data.get("args", {}))
+
+    def condition_from_dict(self, data: dict[str, Any]) -> TransitionCondition:
+        cls = self._conditions.get(data["name"])
+        if cls is None:
+            raise WorkflowGraphError(
+                f"no transition condition registered for {data['name']!r}"
+            )
+        return cls(**data.get("args", {}))
+
+
+_default_registry: TransitionRegistry | None = None
+
+
+def default_transition_registry() -> TransitionRegistry:
+    """Return the lazily-initialised process-wide default registry.
+
+    Mutated by the back-compat ``register_target`` / ``register_condition``
+    helpers. Tests that need isolation should construct a fresh
+    ``TransitionRegistry`` instead and pass it to
+    ``TransitionGraph.loads(..., registry=)``.
+    """
+    global _default_registry
+    if _default_registry is None:
+        _default_registry = TransitionRegistry()
+    return _default_registry
 
 
 def register_target(target_cls: type[TransitionTarget]) -> None:
-    """Register a custom :class:`TransitionTarget` under ``target_cls.name``.
+    """Register a custom :class:`TransitionTarget` on the default registry.
 
+    Equivalent to ``default_transition_registry().register_target(...)``.
     Re-registering the same name replaces the prior class.
     """
-    _TARGET_REGISTRY[target_cls.name] = target_cls
+    default_transition_registry().register_target(target_cls)
 
 
 def register_condition(condition_cls: type[TransitionCondition]) -> None:
-    """Register a custom :class:`TransitionCondition`. Re-registers
-    are allowed (same name → replace)."""
-    _CONDITION_REGISTRY[condition_cls.name] = condition_cls
+    """Register a custom :class:`TransitionCondition` on the default
+    registry. Re-registers replace."""
+    default_transition_registry().register_condition(condition_cls)
 
 
 # ── TransitionGraph ─────────────────────────────────────────────────────────
@@ -279,16 +348,28 @@ class TransitionGraph:
         return json.dumps(self.to_dict(), sort_keys=True)
 
     @classmethod
-    def loads(cls, data: str | dict[str, Any]) -> "TransitionGraph":
-        """Inverse of :meth:`to_dict` / :meth:`dumps`. Accepts either form."""
+    def loads(
+        cls,
+        data: str | dict[str, Any],
+        *,
+        registry: "TransitionRegistry | None" = None,
+    ) -> "TransitionGraph":
+        """Inverse of :meth:`to_dict` / :meth:`dumps`.
+
+        Accepts either a JSON string or already-parsed dict. ``registry``
+        defaults to the process-wide default — pass an explicit instance
+        when you need isolation (e.g. multi-tenant tests) or a registry
+        seeded with custom targets / conditions.
+        """
         if isinstance(data, str):
             data = json.loads(data)
+        reg = registry if registry is not None else default_transition_registry()
         return cls(
             initial_speaker=data["initial_speaker"],
             transitions=[
-                _transition_from_dict(t) for t in data.get("transitions", [])
+                _transition_from_dict(t, reg) for t in data.get("transitions", [])
             ],
-            default_target=_target_from_dict(data.get("default_target")),
+            default_target=reg.target_from_dict(data.get("default_target")),
             max_turns=data.get("max_turns"),
         )
 
@@ -351,30 +432,12 @@ def _transition_to_dict(transition: Transition) -> dict[str, Any]:
     }
 
 
-def _target_from_dict(data: dict[str, Any] | None) -> TransitionTarget:
-    if data is None:
-        return TerminateTarget()
-    cls = _TARGET_REGISTRY.get(data["name"])
-    if cls is None:
-        raise WorkflowGraphError(
-            f"no transition target registered for {data['name']!r}"
-        )
-    return cls(**data.get("args", {}))
-
-
-def _condition_from_dict(data: dict[str, Any]) -> TransitionCondition:
-    cls = _CONDITION_REGISTRY.get(data["name"])
-    if cls is None:
-        raise WorkflowGraphError(
-            f"no transition condition registered for {data['name']!r}"
-        )
-    return cls(**data.get("args", {}))
-
-
-def _transition_from_dict(data: dict[str, Any]) -> Transition:
+def _transition_from_dict(
+    data: dict[str, Any], registry: TransitionRegistry
+) -> Transition:
     return Transition(
-        when=_condition_from_dict(data["when"]),
-        then=_target_from_dict(data["then"]),
+        when=registry.condition_from_dict(data["when"]),
+        then=registry.target_from_dict(data["then"]),
         priority=data.get("priority", 0),
     )
 

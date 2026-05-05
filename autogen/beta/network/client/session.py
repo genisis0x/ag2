@@ -62,13 +62,17 @@ class Session:
         causation_id: str | None = None,
         event_type: str = EV_TEXT,
         event_data: dict[str, Any] | None = None,
+        depth: int | None = None,
     ) -> str:
         """Post an envelope into this session.
 
         ``audience=None`` broadcasts within the session (all
         participants except sender). ``content`` is the substantive
         body for ``EV_TEXT`` envelopes; for non-text events pass
-        ``event_data`` and ``event_type`` instead.
+        ``event_data`` and ``event_type`` instead. ``depth`` overrides
+        the default 0 so callers (e.g. ``delegate``) can stamp the
+        delegation hop count for ``Rule.limits.delegation_depth``
+        enforcement.
         """
         if event_data is None:
             event_data = {"text": content}
@@ -79,18 +83,21 @@ class Session:
             event_type=event_type,
             event_data=event_data,
             causation_id=causation_id,
+            depth=depth if depth is not None else 0,
         )
         return await self._client.send_envelope(envelope)
 
     async def info(self) -> SessionMetadata:
         """Re-fetch metadata from the hub (refreshes cached state)."""
-        refreshed = await self._client._hub.get_session(self.session_id)
+        refreshed = await self._client._hub_client.get_session(self.session_id)
         self._metadata = refreshed
         return refreshed
 
     async def close(self, reason: str = "") -> SessionMetadata:
         """Close the session. Auto-cascades expiry to non-terminal tasks."""
-        return await self._client._hub.close_session(self.session_id, reason=reason)
+        return await self._client._hub_client.close_session(
+            self.session_id, reason=reason
+        )
 
     def is_terminal(self) -> bool:
         return self._metadata.is_terminal()

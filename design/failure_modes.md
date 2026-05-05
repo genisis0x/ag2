@@ -6,15 +6,16 @@ This doc is the contract: what failure modes exist, what the framework does abou
 
 ## What the framework guarantees
 
-| Guarantee | Mechanism |
-|---|---|
-| **Bounded waits** | Every session has `expires_at`; every task has `expires_at`. Hub TTL sweeper transitions to `EXPIRED` and emits terminal envelopes. Nothing waits literally forever. |
-| **At-least-once delivery** | WAL is durable; receipts checkpoint `inbox.cursor`; on reconnect, hub replays from cursor. (V1: in-process exactly-once by lock; Phase 3: cross-process at-least-once.) |
-| **Liveness signals** | Heartbeat-derived `peer.unreachable` / `peer.reconnected` envelopes propagated to active sessions. |
-| **Stall signals** | `task.stalled` when no progress within `task_stall_threshold`; `session.idle` when no envelope within `session_idle_threshold`. |
-| **Quorum signals** | `session.quorum_changed(remaining, required)` when participant counts change in active multi-party sessions. |
-| **Protocol-shape enforcement** | `SessionManifest.expectations` declared by the adapter author; hub evaluates and applies declared `on_violation` handlers. |
-| **Adapter contracts** | `validate_send` rejects malformed sends pre-WAL; `on_accepted` advances state per protocol. |
+| Guarantee | Mechanism | V1 status |
+|---|---|---|
+| **Bounded waits** | Every session has `expires_at`; every task has `expires_at`. Hub TTL sweeper transitions to `EXPIRED` and emits terminal envelopes. | ✅ V1 |
+| **At-least-once delivery** | WAL is durable; receipts checkpoint `inbox.cursor`; on reconnect, hub replays from cursor. | V1: in-process exactly-once by lock. Phase 3: cross-process at-least-once. |
+| **Idle / ack-stall signals** | `acks_within`, `reply_within`, `max_silence` expectations declared on a manifest fire `ag2.expectation.violated` envelopes (or run `audit` / `auto_close` handlers). | ✅ V1 — see `expectations.py` |
+| **Peer reachability signals** | Heartbeat-derived `peer.unreachable` / `peer.reconnected` envelopes propagated to active sessions. | Phase 3 — needs WebSocket transport. |
+| **Per-task stall signal** | `task.stalled` when no progress within a per-task threshold. | Phase 2 — per-task `last_progress_at` sweeping. |
+| **Quorum signals** | `session.quorum_changed(remaining, required)` when participant counts change in active multi-party sessions. | Phase 2 — N-of-M quorum tracking. |
+| **Protocol-shape enforcement** | `SessionManifest.expectations` declared by the adapter author; hub evaluates and applies declared `on_violation` handlers. | ✅ V1 |
+| **Adapter contracts** | `validate_send` rejects malformed sends pre-WAL; `on_accepted` advances state per protocol. | ✅ V1 |
 
 ## What the agent is responsible for
 
@@ -48,17 +49,17 @@ This doc is the contract: what failure modes exist, what the framework does abou
 
 **Symptom**: WS heartbeat misses; transport-level disconnect.
 
-**Framework**: hub marks `runtime.json.reachable=false` after `peer_heartbeat_timeout` (default 30s); emits `ag2.peer.unreachable(peer_id, since)` to every active session the peer is in. Phase 3: hub holds queued envelopes for the peer up to `inbox.max_pending` — if peer reconnects within session TTL, replays from cursor; if not, the inbox-overflow policy kicks in.
+**V1**: not detected — `LocalLink` shares the process, so a process death takes the hub down with it. **Phase 3**: hub marks `runtime.json.reachable=false` after `peer_heartbeat_timeout`; emits `ag2.peer.unreachable(peer_id, since)`. Hub holds queued envelopes up to `inbox.max_pending`; reconnect within session TTL replays from cursor; otherwise inbox-overflow policy applies.
 
-**Agent**: see the unreachable event in the WAL → projection; decide whether to wait, swap peer, or close the session.
+**Agent**: V1 — close the session manually if the peer fails to reply within an expected window; the manifest's `reply_within` / `max_silence` expectations help. Phase 3 — react to `ag2.peer.unreachable` in the WAL projection.
 
 ### 4. Task starts but stalls
 
 **Symptom**: `TaskStarted` was emitted but no `TaskProgress` for an extended period.
 
-**Framework**: `Hub.expectation_sweeper` (or the per-task version) emits `ag2.task.stalled(task_id, last_progress_at)` after `task_stall_threshold` (default 60s). Owner is informed on its own stream; peers waiting via `tasks(action="wait")` see it as a non-terminal hint envelope on their subscription.
+**V1**: surfaced session-side via `max_silence` expectation if the stalled task is the only thing keeping the session alive. Per-task `ag2.task.stalled` envelopes are **Phase 2** — they require a per-task `last_progress_at` sweeper.
 
-**Agent**: owner can heartbeat with a no-op progress envelope to suppress the stall; observers can choose to keep waiting or fail their own outer task.
+**Agent**: V1 — design tasks with conservative TTLs; `EXPIRED` is the deterministic signal. Phase 2 — react to `ag2.task.stalled` from peers waiting via `tasks(action="wait")`.
 
 ### 5. Task expires (TTL)
 
@@ -110,12 +111,12 @@ This doc is the contract: what failure modes exist, what the framework does abou
 
 ## Configuration knobs
 
-All the thresholds live in `Rule.limits` and can be tightened per-agent:
+V1 keeps the per-tenant `LimitsBlock` deliberately small — only the
+fields the hub actually enforces:
 
 ```python
 @dataclass(slots=True)
 class LimitsBlock:
-    # Existing
     max_concurrent_sessions: int = 0
     max_concurrent_tasks: int = 0
     session_ttl_default: str = "2h"
@@ -123,14 +124,21 @@ class LimitsBlock:
     rate: RateBlock = ...
     delegation_depth: int = 5
     inbox: InboxBlock = ...
-
-    # Failure-mode thresholds
-    peer_heartbeat_timeout: str = "30s"          # marks peer unreachable
-    task_stall_threshold: str = "60s"            # emits task.stalled
-    session_idle_threshold: str = "5m"           # emits session.idle
 ```
 
-The `Expectation` records on `SessionManifest` express adapter-level contracts (`reply_within`, `acks_within`, `turn_within`, `max_silence`, `min_participation`, `progress_within`). See [sessions.md](sessions.md) for the full table.
+Failure-mode thresholds intentionally live on the **manifest** in V1
+via the adapter's declared `expectations`, not on `LimitsBlock` —
+that keeps the V1 mechanism unified (one knob per behaviour) and
+prevents callers from setting per-tenant rules that look enforced but
+aren't:
+
+* `acks_within(seconds)` — invitee must ack within T after `EV_SESSION_INVITE`.
+* `reply_within(seconds)` — addressed participant must respond within T.
+* `max_silence(seconds)` — session must see content within T.
+
+Phase 2 adds `turn_within`, `progress_within`, `min_participation`;
+Phase 3 adds peer reachability (which needs the WebSocket transport).
+See [sessions.md](sessions.md) for the full expectation table.
 
 ## What this is NOT
 
@@ -142,18 +150,20 @@ The `Expectation` records on `SessionManifest` express adapter-level contracts (
 
 ## Quick reference — events by mode
 
-| Mode | Event(s) emitted | Origin |
-|---|---|---|
-| Invite never ack'd | `ag2.expectation.violated(name="acks_within")`, then `ag2.session.expired` | Hub |
-| Reply never sent | `ag2.expectation.violated(name="reply_within")`, then `ag2.session.expired` | Hub |
-| Peer disconnected | `ag2.peer.unreachable(peer_id, since)` | Hub |
-| Peer reconnected | `ag2.peer.reconnected(peer_id)` | Hub |
-| Task stalled | `ag2.task.stalled(task_id, last_progress_at)` | Hub |
-| Task expired | `ag2.task.expired(task_id)` | Hub |
-| Session idle | `ag2.session.idle(seconds)` | Hub |
-| Session quorum changed | `ag2.session.quorum_changed(remaining, required)` | Hub |
-| Session expired | `ag2.session.expired` | Hub |
-| Expectation violated | `ag2.expectation.violated(name, on_violation, ...)` | Hub |
-| Adapter rejected send | `ag2.error(code="protocol", message=...)` | Hub |
-| Inbox overflow | `ag2.error(code="inbox_full", message=...)` | Hub |
-| Participant removed | `ag2.participant.removed(agent_id, reason)` | Hub |
+V1 ships only the events listed under "V1" below. Phase 2/3 events
+land with their producers; the constants are not exposed until then.
+
+| Mode | Event(s) emitted | Origin | Phase |
+|---|---|---|---|
+| Invite never ack'd | `ag2.expectation.violated(name="acks_within")`, then `ag2.session.expired` (if `auto_close`) | Hub | V1 |
+| Reply never sent | `ag2.expectation.violated(name="reply_within")` | Hub | V1 |
+| Session silent | `ag2.expectation.violated(name="max_silence")` | Hub | V1 |
+| Session expired | `ag2.session.expired` | Hub | V1 |
+| Session closed | `ag2.session.closed` | Hub | V1 |
+| Adapter rejected send | `ProtocolError` raised back to sender (no envelope; offending send is **not** WAL'd) | Hub | V1 |
+| Inbox overflow | `InboxFull` raised back to sender | Hub | V1 |
+| Peer disconnected | `ag2.peer.unreachable(peer_id, since)` | Hub | Phase 3 |
+| Peer reconnected | `ag2.peer.reconnected(peer_id)` | Hub | Phase 3 |
+| Task stalled | `ag2.task.stalled(task_id, last_progress_at)` | Hub | Phase 2 |
+| Session quorum changed | `ag2.session.quorum_changed(remaining, required)` | Hub | Phase 2 |
+| Participant removed | `ag2.participant.removed(agent_id, reason)` | Hub | Phase 2 (`remove` violation handler) |

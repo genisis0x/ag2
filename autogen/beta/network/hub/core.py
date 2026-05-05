@@ -53,6 +53,7 @@ from ..errors import AccessDeniedError, NetworkError, NotFoundError, ProtocolErr
 from ..identity import ObservedStat, Passport, Resume, ResumeExample
 from ..ids import make_id
 from ..rule import Rule, parse_duration
+from ..views.base import ViewPolicy
 from ..session import (
     Participant,
     ParticipantRole,
@@ -90,7 +91,13 @@ from .audit import (
     AUDIT_KIND_AGENT_UNREGISTERED,
     AUDIT_KIND_RESUME_SET,
     AUDIT_KIND_RULE_SET,
+    AUDIT_KIND_SESSION_CLOSED,
+    AUDIT_KIND_SESSION_CREATED,
+    AUDIT_KIND_SESSION_EXPIRED,
     AUDIT_KIND_SKILL_SET,
+    AUDIT_KIND_TASK_TERMINATED,
+    RESUME_SOURCE_OBSERVED,
+    RESUME_SOURCE_TENANT,
     AuditLog,
 )
 from .expectations import (
@@ -421,6 +428,7 @@ class Hub:
                 now_iso=now_iso,
                 now_seconds=now_seconds,
             )
+            terminal = False
             for expectation in metadata.manifest.expectations:
                 evaluator = self._expectation_evaluators.get(expectation.name)
                 if evaluator is None:
@@ -447,8 +455,12 @@ class Hub:
                         pass
                     if expectation.on_violation == "auto_close":
                         # Session is terminal — no further violations on
-                        # this session are meaningful this tick.
-                        return
+                        # this session are meaningful this tick. Other
+                        # sessions still get evaluated.
+                        terminal = True
+                        break
+                if terminal:
+                    break
 
     # ── Registration (M1) ───────────────────────────────────────────────────
 
@@ -605,6 +617,7 @@ class Hub:
         await self._audit_log.append({
             "at": self._clock(),
             "kind": AUDIT_KIND_RESUME_SET,
+            "source": RESUME_SOURCE_TENANT,
             "agent_id": agent_id,
             "version": resume.version,
         })
@@ -684,6 +697,16 @@ class Hub:
         if owner_id not in bucket:
             bucket.add(owner_id)
             await self._persist_capability_index()
+
+        await self._audit_log.append({
+            "at": self._clock(),
+            "kind": AUDIT_KIND_RESUME_SET,
+            "source": RESUME_SOURCE_OBSERVED,
+            "agent_id": owner_id,
+            "version": resume.version,
+            "capability": capability,
+            "outcome": outcome.value,
+        })
 
     def agents_with_capability(self, capability: str) -> list[str]:
         """Return agent_ids matching ``capability`` (claimed or observed)."""
@@ -777,6 +800,15 @@ class Hub:
         self._adapter_states[session_id] = adapter.initial_state(metadata)
 
         await self._persist_session_metadata(metadata)
+        await self._audit_log.append({
+            "at": now,
+            "kind": AUDIT_KIND_SESSION_CREATED,
+            "session_id": session_id,
+            "manifest_type": manifest_type,
+            "manifest_version": manifest_version,
+            "creator_id": creator_id,
+            "participants": [p.agent_id for p in metadata_participants],
+        })
 
         if not invitees:
             # Self-only session — already complete; transition to ACTIVE.
@@ -827,6 +859,57 @@ class Hub:
         if metadata is None:
             raise NotFoundError(f"session not found: {session_id}")
         return metadata
+
+    def can_send(
+        self,
+        session_id: str,
+        sender_id: str,
+        *,
+        event_type: str | None = None,
+    ) -> bool:
+        """True if the adapter would accept a substantive send from
+        ``sender_id`` against the current state.
+
+        Wraps ``adapter.validate_send`` with a probe envelope so the
+        default notify handler doesn't need to reach into private hub
+        state to figure out whether it's the agent's turn.
+        """
+        from ..envelope import EV_TEXT  # local to avoid cycle
+
+        metadata = self._sessions.get(session_id)
+        if metadata is None or metadata.is_terminal():
+            return False
+        state = self._adapter_states.get(session_id)
+        if state is None:
+            return False
+        adapter = self._adapter_for(metadata.manifest.type, metadata.manifest.version)
+        probe = Envelope(
+            session_id=session_id,
+            sender_id=sender_id,
+            audience=None,
+            event_type=event_type or EV_TEXT,
+            event_data={"text": ""},
+        )
+        try:
+            adapter.validate_send(metadata, probe, state)
+        except Exception:
+            return False
+        return True
+
+    def default_view_policy(
+        self,
+        session_id: str,
+        participant_id: str,
+    ) -> "ViewPolicy":
+        """Return the adapter-declared default view policy for this
+        participant on this session. Wraps
+        ``adapter.default_view_policy`` so callers don't need adapter
+        registry access."""
+        metadata = self._sessions.get(session_id)
+        if metadata is None:
+            raise NotFoundError(f"session not found: {session_id}")
+        adapter = self._adapter_for(metadata.manifest.type, metadata.manifest.version)
+        return adapter.default_view_policy(metadata, participant_id)
 
     async def list_sessions(
         self,
@@ -997,6 +1080,16 @@ class Hub:
                         f"sender {sender.name!r} not permitted to send to {recipient.name!r}"
                     )
 
+        # Delegation-depth check. ``0`` disables the cap. Hub rejects
+        # before the WAL append so the outer caller sees the limit
+        # synchronously and the WAL stays clean.
+        depth_cap = sender_rule.limits.delegation_depth
+        if depth_cap > 0 and envelope.depth > depth_cap:
+            raise AccessDeniedError(
+                f"sender {sender.name!r} exceeded delegation_depth "
+                f"({envelope.depth} > {depth_cap})"
+            )
+
         metadata = self._sessions.get(envelope.session_id)
         if metadata is None:
             raise NotFoundError(f"session not found: {envelope.session_id}")
@@ -1016,7 +1109,17 @@ class Hub:
 
         # Critical section: validate, append, fold, on_accepted under lock.
         async with self._wal_lock(envelope.session_id):
-            state = self._adapter_states[envelope.session_id]
+            state = self._adapter_states.get(envelope.session_id)
+            if state is None:
+                # Session metadata exists but its adapter state was
+                # never folded — typically a hydrate where the manifest's
+                # adapter was not registered. Surface as a protocol
+                # error rather than a bare KeyError.
+                raise ProtocolError(
+                    f"session {envelope.session_id!r} has no adapter state "
+                    f"(manifest {metadata.manifest.type!r}@v{metadata.manifest.version} "
+                    "may not be registered)"
+                )
             adapter.validate_send(metadata, envelope, state)
 
             envelope.envelope_id = make_id()
@@ -1253,6 +1356,16 @@ class Hub:
             async with self._wal_lock(session_id):
                 await self._wal_append(close_envelope)
             await self._dispatch(close_envelope, metadata)
+            await self._audit_log.append({
+                "at": metadata.closed_at,
+                "kind": (
+                    AUDIT_KIND_SESSION_EXPIRED
+                    if new_state == SessionState.EXPIRED
+                    else AUDIT_KIND_SESSION_CLOSED
+                ),
+                "session_id": session_id,
+                "reason": reason,
+            })
 
     async def _transition_task(
         self,
@@ -1269,6 +1382,17 @@ class Hub:
             if new_state == TaskState.EXPIRED:
                 metadata.error = reason or metadata.error or "expired"
         await self._persist_task_metadata(metadata)
+        if new_state in TERMINAL_TASK_STATES:
+            await self._audit_log.append({
+                "at": metadata.completed_at,
+                "kind": AUDIT_KIND_TASK_TERMINATED,
+                "task_id": task_id,
+                "owner_id": metadata.owner_id,
+                "session_id": metadata.session_id,
+                "outcome": new_state.value,
+                "capability": metadata.spec.capability,
+                "reason": reason,
+            })
 
     # ── Persistence helpers ──────────────────────────────────────────────────
 
@@ -1326,12 +1450,19 @@ class Hub:
             return
         metadata = SessionMetadata.from_dict(json.loads(metadata_data))
         self._sessions[session_id] = metadata
-        if not metadata.is_terminal():
-            self._active_sessions[session_id] = metadata
 
         adapter = self._adapters.get((metadata.manifest.type, metadata.manifest.version))
         if adapter is None:
-            return  # adapter not registered; cannot fold
+            # No adapter for this session's manifest. We keep the
+            # metadata in ``_sessions`` (so observers can read its
+            # final-or-current shape) but do **not** mark it active —
+            # ``post_envelope`` would otherwise hit a missing
+            # ``_adapter_states`` entry. Re-register the adapter and
+            # call ``hydrate()`` again to fold its WAL.
+            return
+
+        if not metadata.is_terminal():
+            self._active_sessions[session_id] = metadata
 
         state = adapter.initial_state(metadata)
         wal = await self.read_wal(session_id)
@@ -1362,6 +1493,7 @@ def _task_metadata_to_dict(metadata: TaskMetadata) -> dict[str, object]:
             "title": metadata.spec.title,
             "description": metadata.spec.description,
             "payload": dict(metadata.spec.payload),
+            "capability": metadata.spec.capability,
         },
         "state": metadata.state.value,
         "created_at": metadata.created_at,
@@ -1379,10 +1511,12 @@ def _task_metadata_to_dict(metadata: TaskMetadata) -> dict[str, object]:
 def _task_metadata_from_dict(data: dict[str, object]) -> TaskMetadata:
     spec_data = data.get("spec") or {}
     if isinstance(spec_data, dict):
+        capability_raw = spec_data.get("capability")
         spec = TaskSpec(
             title=str(spec_data.get("title", "")),
             description=str(spec_data.get("description", "")),
             payload=dict(spec_data.get("payload") or {}),  # type: ignore[arg-type]
+            capability=capability_raw if isinstance(capability_raw, str) else None,
         )
     else:
         spec = TaskSpec(title="")

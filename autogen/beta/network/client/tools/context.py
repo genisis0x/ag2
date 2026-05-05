@@ -39,7 +39,7 @@ def _excerpt(envelope: Envelope, max_chars: int = 240) -> str:
     return text[: max_chars - 1] + "…"
 
 
-def make_context_tool(client: "AgentClient") -> object:
+def make_context_tool(agent_client: "AgentClient") -> object:
     """Return a closure-bound ``context`` tool."""
 
     @tool
@@ -52,7 +52,7 @@ def make_context_tool(client: "AgentClient") -> object:
         recent_n: int = 1,
         limit: int = 10,
         session_id: str | None = None,
-        ag_client: AgentClientInject = None,
+        client: AgentClientInject = None,
         session: SessionInject = None,
     ) -> list[dict] | str:
         """Read from past content.
@@ -64,8 +64,8 @@ def make_context_tool(client: "AgentClient") -> object:
                     Returns the last ``recent_n`` envelopes from
                     ``speaker`` in the current (or specified) session.
         """
-        actual = ag_client if ag_client is not None else client
-        hub = actual._hub
+        actual = client if client is not None else agent_client
+        hub = actual._hub_client
         sid = session_id or (session.session_id if session is not None else None)
 
         if action == "search":

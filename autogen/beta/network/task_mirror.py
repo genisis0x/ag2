@@ -32,6 +32,7 @@ from .errors import NotFoundError
 if TYPE_CHECKING:
     from autogen.beta.context import Stream
 
+    from .client.hub_client import HubClient
     from .hub import Hub
 
 __all__ = ("TaskMirror",)
@@ -48,6 +49,11 @@ class TaskMirror:
     ``agent_id``). Attach to a stream for the duration of a notify
     handler / Agent.ask call, then detach.
 
+    The mirror routes through a :class:`HubClient` so V1 (in-process)
+    and Phase 3 (cross-process WS) share the same call sites. Tests
+    that hold a bare ``Hub`` can still pass it directly via the legacy
+    ``hub=`` keyword for convenience.
+
     Failures forwarding to the hub are swallowed — the mirror must
     never crash the agent's turn. Production builds should log; M2
     keeps quiet.
@@ -56,14 +62,72 @@ class TaskMirror:
     def __init__(
         self,
         *,
-        hub: "Hub",
+        hub_client: "HubClient | None" = None,
+        hub: "Hub | None" = None,
         owner_id: str,
         session_id: str | None = None,
     ) -> None:
         # __init__ stores params; subscription happens in attach().
-        self._hub = hub
+        if hub_client is None and hub is None:
+            raise TypeError(
+                "TaskMirror requires either hub_client= or hub= (legacy)"
+            )
+        self._hub_client = hub_client
+        self._hub = hub if hub is not None else (
+            hub_client._hub if hub_client is not None else None
+        )
         self._owner_id = owner_id
         self._session_id = session_id
+
+    async def _observe(self, metadata: TaskMetadata) -> None:
+        if self._hub_client is not None:
+            await self._hub_client.observe_task(metadata)
+        elif self._hub is not None:
+            await self._hub.observe_task(metadata)
+
+    async def _update(
+        self,
+        task_id: str,
+        *,
+        state: TaskState | None = None,
+        progress: dict[str, object] | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> None:
+        if self._hub_client is not None:
+            await self._hub_client.update_task(
+                task_id,
+                state=state,
+                progress=progress,
+                result=result,
+                error=error,
+            )
+        elif self._hub is not None:
+            await self._hub.update_task(
+                task_id,
+                state=state,
+                progress=progress,
+                result=result,
+                error=error,
+            )
+
+    async def _record(
+        self, *, owner_id: str, capability: str, outcome: TaskState, latency_ms: int | None
+    ) -> None:
+        if self._hub_client is not None:
+            await self._hub_client.record_observation(
+                owner_id=owner_id,
+                capability=capability,
+                outcome=outcome,
+                latency_ms=latency_ms,
+            )
+        elif self._hub is not None:
+            await self._hub.record_observation(
+                owner_id=owner_id,
+                capability=capability,
+                outcome=outcome,
+                latency_ms=latency_ms,
+            )
 
     def attach(self, stream: "Stream") -> list[object]:
         """Subscribe to ``Task*`` events; returns sub ids for ``detach``."""
@@ -96,13 +160,13 @@ class TaskMirror:
             session_id=self._session_id,
         )
         try:
-            await self._hub.observe_task(metadata)
+            await self._observe(metadata)
         except Exception:
             pass
 
     async def _on_progress(self, event: TaskProgress) -> None:
         try:
-            await self._hub.update_task(
+            await self._update(
                 event.task_id,
                 progress=dict(event.payload) if event.payload else None,
             )
@@ -113,7 +177,7 @@ class TaskMirror:
 
     async def _on_completed(self, event: TaskCompleted) -> None:
         try:
-            await self._hub.update_task(
+            await self._update(
                 event.task_id,
                 state=TaskState.COMPLETED,
                 result=event.result,
@@ -126,7 +190,7 @@ class TaskMirror:
 
     async def _on_failed(self, event: TaskFailed) -> None:
         try:
-            await self._hub.update_task(
+            await self._update(
                 event.task_id,
                 state=TaskState.FAILED,
                 error=str(event.error),
@@ -139,7 +203,7 @@ class TaskMirror:
 
     async def _on_expired(self, event: TaskExpired) -> None:
         try:
-            await self._hub.update_task(event.task_id, state=TaskState.EXPIRED)
+            await self._update(event.task_id, state=TaskState.EXPIRED)
         except NotFoundError:
             pass
         except Exception:
@@ -150,9 +214,16 @@ class TaskMirror:
         self, task_id: str, outcome: TaskState
     ) -> None:
         """If the task's spec carried a ``capability`` tag, push the
-        observation through to ``Hub.record_observation`` so the
-        owner's ``Resume.observed`` updates."""
+        observation through so the owner's ``Resume.observed`` updates.
+
+        ``capability`` and ``started_at`` come from the in-process hub
+        cache (``_tasks``); Phase 3 will move this lookup over the wire.
+        For V1, both ``hub_client._hub`` and the legacy ``hub`` arg
+        provide the same in-process view.
+        """
         if outcome not in TERMINAL_TASK_STATES:
+            return
+        if self._hub is None:
             return
         task_meta = self._hub._tasks.get(task_id)
         if task_meta is None or task_meta.spec.capability is None:
@@ -166,7 +237,7 @@ class TaskMirror:
             except Exception:
                 latency_ms = None
         try:
-            await self._hub.record_observation(
+            await self._record(
                 owner_id=task_meta.owner_id,
                 capability=task_meta.spec.capability,
                 outcome=outcome,

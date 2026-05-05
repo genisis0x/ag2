@@ -7,12 +7,12 @@
 - Agent registry with three-part identity: **`Passport`** (immutable id + billing) + **`Resume`** (mutable claims + observed track record) + optional **`SKILL.md`** (Anthropic-format LLM-facing usage doc). Discovery returns different slices for `find` vs `describe`.
 - Four built-in session types (`consulting`, `conversation`, `discussion`, `workflow`) plus an extensible `SessionAdapter` Protocol — `workflow` carries declarative `Transition` graphs for orchestrated flows (see [workflow.md](workflow.md))
 - `SessionManifest.expectations` — declarative protocol-shape contracts the hub enforces with passive `on_violation` handlers
-- Per-tenant rules: `access` + `limits` (transforms deferred to Phase 3); failure-mode thresholds (`peer_heartbeat_timeout`, `task_stall_threshold`, `session_idle_threshold`)
+- Per-tenant rules: `access` + `limits` (transforms deferred to Phase 3). Per-tenant failure-mode thresholds dropped from V1: peer reachability needs the WebSocket transport (Phase 3); session-idle is covered by the manifest-level `max_silence` expectation; per-task stall surfacing is Phase 2.
 - **Task as a framework-core primitive** (`autogen/beta/task.py`) — any Agent can wrap work in a trackable lifecycle, with or without a hub. The network is one observer.
 - Two view policies (`FullTranscript`, `WindowedSummary`) — `Composite` deferred to Phase 2
 - A `NetworkClient` Protocol — `AgentClient` is the V1 implementation; future `HumanClient` / `AdminClient` slot in
 - A `NetworkPlugin` that attaches to an `Agent`, adds 6 LLM tools (2 flat + 4 grouped), and injects network metadata into prompts
-- Liveness + stall + idle signal events from a focused expectation set: 3 evaluators (`acks_within`, `reply_within`, `max_silence`) × 3 handlers (`audit`, `notify_session`, `auto_close`)
+- Idle and ack-stall signals via a focused expectation set: 3 evaluators (`acks_within`, `reply_within`, `max_silence`) × 3 handlers (`audit`, `notify_session`, `auto_close`). Peer-reachability and per-task-stall envelopes (`ag2.peer.unreachable`, `ag2.task.stalled`) are Phase 2/3 — they need transport-level disconnect events and per-task last-progress sweeping respectively.
 - Append-only audit log for hub-cross-cutting events (register/unregister, rule changes, expectation fires) — single `audit.jsonl`, rotation deferred to Phase 2
 - In-process `LocalLink` transport
 - `MemoryKnowledgeStore` + `DiskKnowledgeStore` persistence (already in framework-core)

@@ -200,7 +200,7 @@ async def test_post_envelope_after_hydrate_without_adapter_state_raises_protocol
 
 
 @pytest.mark.asyncio
-async def test_expectation_tick_processes_all_sessions_when_one_auto_closes() -> None:
+async def testevaluate_expectations_processes_all_sessions_when_one_auto_closes() -> None:
     """When session A's expectation fires ``auto_close``, session B's
     expectations on the same tick are still evaluated.
 
@@ -249,7 +249,7 @@ async def test_expectation_tick_processes_all_sessions_when_one_auto_closes() ->
 
     # Advance past max_silence — both should violate.
     clock.advance(120)
-    await hub._expectation_tick()
+    await hub.evaluate_expectations()
 
     audit = await hub._audit_log.read_all()
     closed_session_ids = {r["session_id"] for r in audit if r["kind"] == AUDIT_KIND_SESSION_CLOSED}

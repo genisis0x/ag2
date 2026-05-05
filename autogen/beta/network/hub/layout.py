@@ -24,6 +24,7 @@ __all__ = (
     "rule_path",
     "runtime_path",
     "session_metadata_path",
+    "session_removed_path",
     "session_tasks_index_path",
     "sessions_root",
     "skill_path",
@@ -106,6 +107,12 @@ def wal_path(session_id: str) -> str:
 
 def session_tasks_index_path(session_id: str) -> str:
     return f"/sessions/{session_id}/tasks.json"
+
+
+def session_removed_path(session_id: str) -> str:
+    """Phase 2.0 — agents removed from this session by the ``remove``
+    violation handler. JSON list of agent_ids."""
+    return f"/sessions/{session_id}/removed.json"
 
 
 # ── Tasks ────────────────────────────────────────────────────────────────────

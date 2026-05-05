@@ -11,14 +11,14 @@ Three layers covered:
   ``ExpectationContext`` inputs.
 * **Handlers** (integration) — ``AuditHandler``,
   ``NotifySessionHandler``, ``AutoCloseHandler`` driven by the hub's
-  manual ``_expectation_tick()`` call with a controllable clock.
+  manual ``evaluate_expectations()`` call with a controllable clock.
 * **Audit log** — ``register`` / ``unregister`` / ``set_*`` write the
   expected records via ``AuditLog.read_all()``.
 
 Time control: tests use a ``_MockClock`` so the threshold logic is
 exercised deterministically without sleeping. The sweeper interval is
 disabled (``expectation_sweep_interval=0``); tests call
-``hub._expectation_tick()`` explicitly.
+``hub.evaluate_expectations()`` explicitly.
 """
 
 from datetime import datetime
@@ -298,7 +298,7 @@ async def test_auto_close_handler_terminates_session_with_audit() -> None:
 
     # Advance past the 30s acks_within threshold and tick.
     clock.advance(45)
-    await hub._expectation_tick()
+    await hub.evaluate_expectations()
 
     # Open fails because the session was auto-closed.
     with pytest.raises(Exception):
@@ -339,7 +339,7 @@ async def test_audit_handler_records_without_envelope_or_close() -> None:
 
     # Conversation declares max_silence(3600s, audit). Advance 1h+.
     clock.advance(3700)
-    await hub._expectation_tick()
+    await hub.evaluate_expectations()
 
     # Session still ACTIVE; no EV_EXPECTATION_VIOLATED in WAL.
     state = await hub.get_session(session.session_id)
@@ -401,7 +401,7 @@ async def test_notify_session_handler_broadcasts_envelope() -> None:
     session = await alice.open(type="conversation_notify", target=bob.agent_id)
 
     clock.advance(120)
-    await hub._expectation_tick()
+    await hub.evaluate_expectations()
 
     wal = await hub.read_wal(session.session_id)
     violation_envelopes = [e for e in wal if e.event_type == EV_EXPECTATION_VIOLATED]
@@ -434,9 +434,9 @@ async def test_violation_dedup_within_session_lifetime() -> None:
     pre_audit = len(await hub._audit_log.read_all())
 
     clock.advance(3700)
-    await hub._expectation_tick()
-    await hub._expectation_tick()
-    await hub._expectation_tick()
+    await hub.evaluate_expectations()
+    await hub.evaluate_expectations()
+    await hub.evaluate_expectations()
 
     audit = await hub._audit_log.read_all()
     violations = [r for r in audit[pre_audit:] if r["kind"] == AUDIT_KIND_EXPECTATION_VIOLATED]

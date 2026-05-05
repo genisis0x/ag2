@@ -5,7 +5,7 @@
 """Sweeper background firing + registry isolation + cross-tool flow.
 
 * Real-clock expectation sweeper firing — separate from the unit
-  tests that call ``hub._expectation_tick()`` directly; this exercise
+  tests that call ``hub.evaluate_expectations()`` directly; this exercise
   catches regressions in the background ``_IntervalSweeper`` event
   loop.
 * TransitionRegistry isolation — custom targets registered on a fresh
@@ -86,11 +86,11 @@ def _agent(name: str) -> Agent:
 async def test_expectation_sweeper_fires_violations_in_background() -> None:
     """The ``_IntervalSweeper`` background task evaluates expectations
     on a real interval and writes audit records — without anyone
-    calling ``hub._expectation_tick()`` directly.
+    calling ``hub.evaluate_expectations()`` directly.
 
     This catches regressions in the sweeper loop (e.g. the loop being
     cancelled before its first ``fn`` call, or exceptions in
-    ``_expectation_tick`` killing the background task) that mock-clock
+    ``evaluate_expectations`` killing the background task) that mock-clock
     tests would miss.
     """
     immediate_manifest = SessionManifest(

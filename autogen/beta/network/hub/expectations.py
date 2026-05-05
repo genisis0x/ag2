@@ -41,6 +41,8 @@ from ..envelope import EV_EXPECTATION_VIOLATED, EV_TEXT, Envelope
 from ..session import Expectation, SessionMetadata, SessionState
 from .audit import AUDIT_KIND_EXPECTATION_VIOLATED
 
+EV_PARTICIPANT_REMOVED = "ag2.participant.removed"
+
 if TYPE_CHECKING:
     from .core import Hub
 
@@ -50,11 +52,17 @@ __all__ = (
     "AutoCloseHandler",
     "ExpectationContext",
     "ExpectationEvaluator",
+    "HideHandler",
     "MaxSilenceEvaluator",
+    "MinParticipationEvaluator",
     "NotifySessionHandler",
+    "ProgressWithinEvaluator",
+    "RemoveHandler",
     "ReplyWithinEvaluator",
+    "TurnWithinEvaluator",
     "Violation",
     "ViolationHandler",
+    "WarnHandler",
     "default_evaluators",
     "default_handlers",
 )
@@ -267,6 +275,176 @@ class MaxSilenceEvaluator:
         )
 
 
+class TurnWithinEvaluator:
+    """Phase 2.0: fire when an adapter's expected next speaker hasn't
+    posted within T seconds of the trigger envelope.
+
+    Reads ``state.expected_next_speaker`` opportunistically — works for
+    workflow and round-robin discussion adapters that track this
+    explicitly. Adapters without that attribute (consulting,
+    conversation) fall through with no violation, since their turn
+    semantics are already covered by ``reply_within``.
+
+    Anchors on the latest content envelope sent by someone other than
+    the expected speaker — the trigger that put them on the hook.
+    """
+
+    name = "turn_within"
+
+    def evaluate(
+        self,
+        expectation: Expectation,
+        context: ExpectationContext,
+    ) -> Violation | None:
+        if context.metadata.state != SessionState.ACTIVE:
+            return None
+        expected = getattr(context.state, "expected_next_speaker", None)
+        if not isinstance(expected, str) or not expected:
+            return None
+        seconds = float(expectation.params.get("seconds", 120))
+
+        # Find the most recent inbound trigger (content envelope from
+        # someone other than the expected speaker). If the most recent
+        # content envelope is from the expected speaker themselves,
+        # they're caught up — no violation.
+        trigger_iso: str | None = None
+        for env in reversed(context.wal):
+            if not _is_content_event(env.event_type):
+                continue
+            if env.sender_id == expected:
+                return None
+            trigger_iso = env.created_at
+            break
+        if trigger_iso is None:
+            # No inbound trigger yet (e.g. session just opened) — give
+            # the expected speaker the same threshold from session
+            # creation so initiator turns are also covered.
+            trigger_iso = context.metadata.created_at
+        elapsed = context.now_seconds - _parse_iso_seconds(trigger_iso)
+        if elapsed < seconds:
+            return None
+        return Violation(
+            expectation=expectation,
+            violator_ids=[expected],
+            detail={
+                "elapsed_seconds": elapsed,
+                "threshold_seconds": seconds,
+            },
+        )
+
+
+class ProgressWithinEvaluator:
+    """Phase 2.0: fire when an active task has had no progress for T.
+
+    Pure-WAL evaluator: walks task envelopes (``ag2.task.started`` /
+    ``ag2.task.progress``), groups by ``task_id``, and fires per-task
+    violations on tasks that have started, haven't terminated, and
+    whose most recent progress (or start) is older than T.
+    """
+
+    name = "progress_within"
+
+    def evaluate(
+        self,
+        expectation: Expectation,
+        context: ExpectationContext,
+    ) -> Violation | None:
+        if context.metadata.state != SessionState.ACTIVE:
+            return None
+        seconds = float(expectation.params.get("seconds", 60))
+
+        # task_id → (latest_progress_iso, owner_id, terminal?)
+        tasks: dict[str, tuple[str, str, bool]] = {}
+        for env in context.wal:
+            tid = env.task_id
+            if not tid:
+                continue
+            etype = env.event_type
+            if etype == "ag2.task.started":
+                tasks[tid] = (env.created_at, env.sender_id, False)
+            elif etype == "ag2.task.progress":
+                prev = tasks.get(tid)
+                owner = prev[1] if prev else env.sender_id
+                tasks[tid] = (env.created_at, owner, False)
+            elif etype in ("ag2.task.completed", "ag2.task.failed", "ag2.task.expired"):
+                prev = tasks.get(tid)
+                if prev is not None:
+                    tasks[tid] = (prev[0], prev[1], True)
+
+        violators: list[str] = []
+        latest_elapsed = 0.0
+        for tid, (last_iso, owner, terminal) in tasks.items():
+            if terminal:
+                continue
+            elapsed = context.now_seconds - _parse_iso_seconds(last_iso)
+            if elapsed >= seconds:
+                violators.append(owner)
+                latest_elapsed = max(latest_elapsed, elapsed)
+
+        if not violators:
+            return None
+        return Violation(
+            expectation=expectation,
+            violator_ids=violators,
+            detail={
+                "elapsed_seconds": latest_elapsed,
+                "threshold_seconds": seconds,
+                "stalled_tasks": sorted(
+                    tid for tid, (_, _, term) in tasks.items() if not term
+                ),
+            },
+        )
+
+
+class MinParticipationEvaluator:
+    """Phase 2.0: fire when a participant posted fewer than ``count``
+    content envelopes in the last ``window_seconds``.
+
+    Defaults: ``count=1``, ``window_seconds=600``. Useful for
+    discussion-style sessions where every voice should be heard.
+    Initiator-only or single-recipient adapters typically skip this
+    expectation in their manifest — the violation is uninteresting
+    when the protocol structurally expects asymmetric participation.
+    """
+
+    name = "min_participation"
+
+    def evaluate(
+        self,
+        expectation: Expectation,
+        context: ExpectationContext,
+    ) -> Violation | None:
+        if context.metadata.state != SessionState.ACTIVE:
+            return None
+        count = int(expectation.params.get("count", 1))
+        window = float(expectation.params.get("window_seconds", 600))
+        cutoff = context.now_seconds - window
+
+        # Count substantive sends per participant within the window.
+        sends: dict[str, int] = {p.agent_id: 0 for p in context.metadata.participants}
+        for env in context.wal:
+            if not _is_content_event(env.event_type):
+                continue
+            sender = env.sender_id
+            if sender not in sends:
+                continue
+            if _parse_iso_seconds(env.created_at) >= cutoff:
+                sends[sender] += 1
+
+        violators = sorted(pid for pid, n in sends.items() if n < count)
+        if not violators:
+            return None
+        return Violation(
+            expectation=expectation,
+            violator_ids=violators,
+            detail={
+                "count_threshold": count,
+                "window_seconds": window,
+                "actual": {pid: sends[pid] for pid in violators},
+            },
+        )
+
+
 # ── Handlers ────────────────────────────────────────────────────────────────
 
 
@@ -355,12 +533,128 @@ class AutoCloseHandler:
             )
 
 
+class WarnHandler:
+    """Phase 2.0: audit + emit ``EV_EXPECTATION_VIOLATED`` to the
+    violator(s) only.
+
+    Differs from ``notify_session`` (broadcast): ``warn`` is targeted,
+    so the offending participant gets the signal without spamming the
+    whole session. Falls back to a broadcast for session-wide
+    violations (``violator_ids=[]``) since there's no specific target.
+    """
+
+    name = "warn"
+
+    async def handle(
+        self,
+        hub: "Hub",
+        session_id: str,
+        violation: Violation,
+    ) -> None:
+        await _audit_violation(hub, session_id, violation)
+        metadata = hub._sessions.get(session_id)
+        if metadata is None or metadata.is_terminal():
+            return
+        audience = list(violation.violator_ids) or None
+        envelope = Envelope(
+            session_id=session_id,
+            sender_id=metadata.creator_id,
+            audience=audience,
+            event_type=EV_EXPECTATION_VIOLATED,
+            event_data={
+                "expectation": violation.expectation.name,
+                "violators": list(violation.violator_ids),
+                "detail": dict(violation.detail),
+            },
+        )
+        with contextlib.suppress(Exception):
+            await hub.post_envelope(envelope)
+
+
+class HideHandler:
+    """Phase 2.0: audit + suppress live notifies to the violator.
+
+    The violator's WAL view is unaffected (audit truth is unchanged);
+    only their live ``notify`` deliveries are dropped. Useful for
+    silently sidelining a slow / disruptive participant without
+    closing the session. In-memory only — a hub restart drops the
+    flag.
+    """
+
+    name = "hide"
+
+    async def handle(
+        self,
+        hub: "Hub",
+        session_id: str,
+        violation: Violation,
+    ) -> None:
+        await _audit_violation(hub, session_id, violation)
+        for vid in violation.violator_ids:
+            hub.mark_hidden(session_id, vid)
+
+
+class RemoveHandler:
+    """Phase 2.0: audit + bar the violator from sending into the session.
+
+    Posts ``ag2.participant.removed`` with the offending agent_id and
+    reason so peers can react. The bar is persisted to
+    ``sessions/{id}/removed.json`` and reapplied on hub restart.
+
+    Does NOT mutate ``metadata.participants`` — that would desync the
+    adapter's folded state (which still references the removed
+    participant in ``participant_order``). Instead, ``post_envelope``
+    rejects substantive sends from removed agents at the access layer.
+    """
+
+    name = "remove"
+
+    async def handle(
+        self,
+        hub: "Hub",
+        session_id: str,
+        violation: Violation,
+    ) -> None:
+        await _audit_violation(hub, session_id, violation)
+        metadata = hub._sessions.get(session_id)
+        if metadata is None or metadata.is_terminal():
+            return
+        for vid in violation.violator_ids:
+            await hub.mark_removed(session_id, vid)
+            envelope = Envelope(
+                session_id=session_id,
+                sender_id=metadata.creator_id,
+                audience=None,
+                event_type=EV_PARTICIPANT_REMOVED,
+                event_data={
+                    "agent_id": vid,
+                    "reason": f"expectation_violated:{violation.expectation.name}",
+                },
+            )
+            with contextlib.suppress(Exception):
+                await hub.post_envelope(envelope)
+
+
 # ── Factories ───────────────────────────────────────────────────────────────
 
 
 def default_evaluators() -> list[ExpectationEvaluator]:
-    return [AcksWithinEvaluator(), ReplyWithinEvaluator(), MaxSilenceEvaluator()]
+    return [
+        AcksWithinEvaluator(),
+        ReplyWithinEvaluator(),
+        MaxSilenceEvaluator(),
+        TurnWithinEvaluator(),
+        ProgressWithinEvaluator(),
+        MinParticipationEvaluator(),
+    ]
 
 
 def default_handlers() -> list[ViolationHandler]:
-    return [AuditHandler(), NotifySessionHandler(), AutoCloseHandler()]
+    return [
+        AuditHandler(),
+        NotifySessionHandler(),
+        AutoCloseHandler(),
+        WarnHandler(),
+        HideHandler(),
+        RemoveHandler(),
+    ]

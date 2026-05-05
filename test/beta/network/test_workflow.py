@@ -21,7 +21,6 @@ Three layers:
 """
 
 import json
-from typing import Awaitable, Callable
 
 import pytest
 
@@ -29,9 +28,6 @@ from autogen.beta import Agent
 from autogen.beta.knowledge import DiskKnowledgeStore, MemoryKnowledgeStore
 from autogen.beta.network import (
     EV_HANDOFF,
-    EV_SESSION_CLOSED,
-    EV_SESSION_INVITE,
-    EV_SESSION_INVITE_ACK,
     EV_TEXT,
     Envelope,
     Hub,
@@ -45,16 +41,11 @@ from autogen.beta.network.adapters.workflow import (
     WorkflowAdapter,
     WorkflowState,
 )
-from autogen.beta.network.client.agent_client import AgentClient
 from autogen.beta.network.client.tools.handoff import (
     make_handoff_tool,
-    make_handoff_tools_for_graph,
 )
 from autogen.beta.network.errors import ProtocolError
 from autogen.beta.network.session import (
-    Participant,
-    ParticipantRole,
-    SessionMetadata,
     SessionState,
 )
 from autogen.beta.network.transitions import (
@@ -70,7 +61,6 @@ from autogen.beta.network.transitions import (
     TransitionDecision,
     TransitionGraph,
     WorkflowGraphError,
-    register_condition,
     register_target,
 )
 from autogen.beta.testing import TestConfig
@@ -112,9 +102,7 @@ def _envelope(sender: str, *, event_type: str = EV_TEXT, tool: str = "") -> Enve
 
 class TestBuiltInTargets:
     def test_agent_target_resolves_to_named_agent(self) -> None:
-        decision = AgentTarget("bob").resolve(
-            _state(order=["alice", "bob", "carol"]), _envelope("alice")
-        )
+        decision = AgentTarget("bob").resolve(_state(order=["alice", "bob", "carol"]), _envelope("alice"))
         assert decision == TransitionDecision(next_speaker="bob")
 
     def test_round_robin_advances_through_order(self) -> None:
@@ -133,9 +121,7 @@ class TestBuiltInTargets:
         assert d.close_reason == "no_participants"
 
     def test_stay_target_keeps_current_speaker(self) -> None:
-        d = StayTarget().resolve(
-            _state(order=["alice", "bob"], last="bob"), _envelope("bob")
-        )
+        d = StayTarget().resolve(_state(order=["alice", "bob"], last="bob"), _envelope("bob"))
         assert d.next_speaker == "bob"
 
     def test_revert_to_initiator(self) -> None:
@@ -146,9 +132,7 @@ class TestBuiltInTargets:
         assert d.next_speaker == "alice"
 
     def test_terminate_carries_reason(self) -> None:
-        d = TerminateTarget("done").resolve(
-            _state(order=["alice", "bob"]), _envelope("alice")
-        )
+        d = TerminateTarget("done").resolve(_state(order=["alice", "bob"]), _envelope("alice"))
         assert d.next_speaker is None
         assert d.close_reason == "done"
 
@@ -158,30 +142,17 @@ class TestBuiltInConditions:
         assert Always().evaluate(_state(order=["alice"]), _envelope("alice")) is True
 
     def test_from_speaker_matches_sender(self) -> None:
-        assert (
-            FromSpeaker("bob").evaluate(_state(order=["alice", "bob"]), _envelope("bob"))
-            is True
-        )
-        assert (
-            FromSpeaker("bob").evaluate(_state(order=["alice", "bob"]), _envelope("alice"))
-            is False
-        )
+        assert FromSpeaker("bob").evaluate(_state(order=["alice", "bob"]), _envelope("bob")) is True
+        assert FromSpeaker("bob").evaluate(_state(order=["alice", "bob"]), _envelope("alice")) is False
 
     def test_tool_called_matches_handoff_tool(self) -> None:
         env = _envelope("alice", event_type=EV_HANDOFF, tool="transfer_to_eng")
-        assert (
-            ToolCalled("transfer_to_eng").evaluate(_state(order=["alice"]), env) is True
-        )
-        assert (
-            ToolCalled("escalate").evaluate(_state(order=["alice"]), env) is False
-        )
+        assert ToolCalled("transfer_to_eng").evaluate(_state(order=["alice"]), env) is True
+        assert ToolCalled("escalate").evaluate(_state(order=["alice"]), env) is False
 
     def test_tool_called_ignores_non_handoff_envelopes(self) -> None:
         text_env = _envelope("alice")
-        assert (
-            ToolCalled("transfer_to_eng").evaluate(_state(order=["alice"]), text_env)
-            is False
-        )
+        assert ToolCalled("transfer_to_eng").evaluate(_state(order=["alice"]), text_env) is False
 
 
 # ── TransitionGraph serialization ───────────────────────────────────────────
@@ -193,9 +164,7 @@ class TestTransitionGraphSerialization:
             initial_speaker="alice",
             transitions=[
                 Transition(when=Always(), then=RoundRobinTarget(), priority=1),
-                Transition(
-                    when=ToolCalled("escalate"), then=AgentTarget("bob"), priority=0
-                ),
+                Transition(when=ToolCalled("escalate"), then=AgentTarget("bob"), priority=0),
                 Transition(
                     when=FromSpeaker("bob"),
                     then=RevertToInitiatorTarget(),
@@ -276,9 +245,7 @@ class TestGraphFactories:
         graph = TransitionGraph.round_robin(["a", "b", "c"], max_turns=6)
         assert graph.initial_speaker == "a"
         assert graph.max_turns == 6
-        assert graph.transitions == [
-            Transition(when=Always(), then=RoundRobinTarget())
-        ]
+        assert graph.transitions == [Transition(when=Always(), then=RoundRobinTarget())]
 
     def test_sequence_factory(self) -> None:
         graph = TransitionGraph.sequence(["a", "b", "c"])
@@ -317,9 +284,7 @@ async def test_workflow_round_robin_advances_through_participants() -> None:
     bob = await bob_hc.register(_agent("bob"), Passport(name="bob"), Resume())
     carol = await carol_hc.register(_agent("carol"), Passport(name="carol"), Resume())
 
-    graph = TransitionGraph.round_robin(
-        [alice.agent_id, bob.agent_id, carol.agent_id]
-    )
+    graph = TransitionGraph.round_robin([alice.agent_id, bob.agent_id, carol.agent_id])
     session = await alice.open(
         type=WORKFLOW_TYPE,
         target=[bob.agent_id, carol.agent_id],
@@ -417,9 +382,7 @@ async def test_workflow_swarm_with_tool_handoff_and_revert() -> None:
 
     triage_hc = HubClient(link, hub=hub)
     eng_hc = HubClient(link, hub=hub)
-    triage = await triage_hc.register(
-        _agent("triage"), Passport(name="triage"), Resume()
-    )
+    triage = await triage_hc.register(_agent("triage"), Passport(name="triage"), Resume())
     eng = await eng_hc.register(_agent("eng"), Passport(name="eng"), Resume())
 
     graph = TransitionGraph(
@@ -532,8 +495,7 @@ async def test_workflow_manager_as_initiator_auto_pattern() -> None:
         await hub.post_envelope(env)
         state = hub._adapter_states[session.session_id]
         assert state.expected_next_speaker == exp, (
-            f"after {sender.agent_id} sent {et}, expected_next was "
-            f"{state.expected_next_speaker}, expected {exp}"
+            f"after {sender.agent_id} sent {et}, expected_next was {state.expected_next_speaker}, expected {exp}"
         )
 
     await mgr_hc.close()
@@ -663,7 +625,7 @@ async def test_register_workflow_attaches_handoff_tools_per_tool_called() -> Non
             Transition(when=FromSpeaker("eng"), then=RevertToInitiatorTarget()),
         ],
     )
-    plugin = alice.agent._plugins[-1] if hasattr(alice.agent, "_plugins") else None
+    alice.agent._plugins[-1] if hasattr(alice.agent, "_plugins") else None
     # Locate the NetworkPlugin to call register_workflow.
     from autogen.beta.network.client.plugin import NetworkPlugin
 
@@ -686,11 +648,10 @@ async def test_register_workflow_attaches_handoff_tools_per_tool_called() -> Non
 async def test_handoff_tool_posts_ev_handoff_envelope() -> None:
     """The materialised tool body posts an EV_HANDOFF envelope tagged with
     tool_name + reason into the active session."""
-    import json
     from autogen.beta import Context
     from autogen.beta.events import ToolCallEvent
-    from autogen.beta.stream import MemoryStream
     from autogen.beta.network.policies import SESSION_DEP
+    from autogen.beta.stream import MemoryStream
 
     store = MemoryKnowledgeStore()
     hub = await Hub.open(store, ttl_sweep_interval=0, expectation_sweep_interval=0)
@@ -698,9 +659,7 @@ async def test_handoff_tool_posts_ev_handoff_envelope() -> None:
 
     triage_hc = HubClient(link, hub=hub)
     eng_hc = HubClient(link, hub=hub)
-    triage = await triage_hc.register(
-        _agent("triage"), Passport(name="triage"), Resume()
-    )
+    triage = await triage_hc.register(_agent("triage"), Passport(name="triage"), Resume())
     eng = await eng_hc.register(_agent("eng"), Passport(name="eng"), Resume())
 
     graph = TransitionGraph(

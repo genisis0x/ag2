@@ -70,9 +70,7 @@ def make_peers_tool(agent_client: "AgentClient") -> object:
         actual = client if client is not None else agent_client
         hub = actual._hub_client
         if action == "find":
-            passports = await hub.list_agents(
-                capability=capability, query=query, limit=limit
-            )
+            passports = await hub.list_agents(capability=capability, query=query, limit=limit)
             results: list[dict] = []
             for p in passports:
                 if p.agent_id == actual.agent_id:
@@ -82,14 +80,10 @@ def make_peers_tool(agent_client: "AgentClient") -> object:
             if sort_by == "name":
                 results.sort(key=lambda r: r["name"])
             elif sort_by == "cost":
-                results.sort(
-                    key=lambda r: (
-                        (r["cost"] or {}).get("input_per_mtok") or float("inf")
-                    )
-                )
+                results.sort(key=lambda r: (r["cost"] or {}).get("input_per_mtok") or float("inf"))
             elif sort_by == "track_record":
                 results.sort(
-                    key=lambda r: (r["observed_success_rate"] or 0.0),
+                    key=lambda r: r["observed_success_rate"] or 0.0,
                     reverse=True,
                 )
             return results

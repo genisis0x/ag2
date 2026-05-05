@@ -14,7 +14,7 @@ A final integration test wires the full network plugin to two agents
 and exercises the tools through real ``Agent.ask`` turns.
 """
 
-import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -30,18 +30,11 @@ from autogen.beta.network import (
     Passport,
     Resume,
 )
-from autogen.beta.network.adapters.discussion import (
-    DISCUSSION_TYPE,
-    ORDERING_ROUND_ROBIN,
-)
 from autogen.beta.network.client.tools.context import make_context_tool
 from autogen.beta.network.client.tools.peers import make_peers_tool
 from autogen.beta.network.client.tools.sessions import make_sessions_tool
 from autogen.beta.network.client.tools.tasks import make_tasks_tool
-from autogen.beta.network.identity import ObservedStat
 from autogen.beta.network.policies import AGENT_CLIENT_DEP, SESSION_DEP
-from autogen.beta.network.session import SessionState
-from autogen.beta.network.client.session import Session
 from autogen.beta.stream import MemoryStream
 from autogen.beta.testing import TestConfig
 
@@ -88,15 +81,13 @@ async def test_peers_find_returns_other_peers_summary() -> None:
     bob_hc = HubClient(link, hub=hub)
     carol_hc = HubClient(link, hub=hub)
 
-    alice = await alice_hc.register(
-        _agent("alice"), Passport(name="alice"), Resume(claimed_capabilities=["debate"])
-    )
-    bob = await bob_hc.register(
+    alice = await alice_hc.register(_agent("alice"), Passport(name="alice"), Resume(claimed_capabilities=["debate"]))
+    await bob_hc.register(
         _agent("bob"),
         Passport(name="bob"),
         Resume(summary="senior coder", claimed_capabilities=["coding"]),
     )
-    carol = await carol_hc.register(
+    await carol_hc.register(
         _agent("carol"),
         Passport(name="carol"),
         Resume(summary="qa lead", claimed_capabilities=["testing"]),
@@ -127,7 +118,7 @@ async def test_peers_find_filters_by_capability() -> None:
     bob_hc = HubClient(link, hub=hub)
 
     alice = await alice_hc.register(_agent("alice"), Passport(name="alice"), Resume())
-    bob = await bob_hc.register(
+    await bob_hc.register(
         _agent("bob"),
         Passport(name="bob"),
         Resume(claimed_capabilities=["coding"]),
@@ -135,12 +126,8 @@ async def test_peers_find_filters_by_capability() -> None:
 
     tool = make_peers_tool(alice)
     deps = {AGENT_CLIENT_DEP: alice}
-    coders = await _invoke(
-        tool, {"action": "find", "capability": "coding"}, dependencies=deps
-    )
-    other = await _invoke(
-        tool, {"action": "find", "capability": "missing"}, dependencies=deps
-    )
+    coders = await _invoke(tool, {"action": "find", "capability": "coding"}, dependencies=deps)
+    other = await _invoke(tool, {"action": "find", "capability": "missing"}, dependencies=deps)
 
     assert [r["name"] for r in coders] == ["bob"]
     assert other == []
@@ -162,14 +149,14 @@ async def test_peers_describe_returns_skill_md_or_fallback() -> None:
 
     alice = await alice_hc.register(_agent("alice"), Passport(name="alice"), Resume())
     # Bob has an explicit SKILL.md.
-    bob = await bob_hc.register(
+    await bob_hc.register(
         _agent("bob"),
         Passport(name="bob"),
         Resume(claimed_capabilities=["coding"]),
         skill_md="---\nname: bob\ndescription: hand-written\n---\n## Notes\n",
     )
     # Carol falls back to the rendered version.
-    carol = await carol_hc.register(
+    await carol_hc.register(
         _agent("carol"),
         Passport(name="carol"),
         Resume(claimed_capabilities=["qa"], summary="qa lead"),
@@ -178,15 +165,11 @@ async def test_peers_describe_returns_skill_md_or_fallback() -> None:
     tool = make_peers_tool(alice)
     deps = {AGENT_CLIENT_DEP: alice}
 
-    bob_profile = await _invoke(
-        tool, {"action": "describe", "name": "bob"}, dependencies=deps
-    )
+    bob_profile = await _invoke(tool, {"action": "describe", "name": "bob"}, dependencies=deps)
     assert "hand-written" in bob_profile["skill_md"]
     assert bob_profile["resume"]["claimed_capabilities"] == ["coding"]
 
-    carol_profile = await _invoke(
-        tool, {"action": "describe", "name": "carol"}, dependencies=deps
-    )
+    carol_profile = await _invoke(tool, {"action": "describe", "name": "carol"}, dependencies=deps)
     assert "name: carol" in carol_profile["skill_md"]
     assert "qa lead" in carol_profile["skill_md"]
 
@@ -226,17 +209,13 @@ async def test_sessions_open_and_list_and_close() -> None:
     assert any(s["session_id"] == sid for s in listed)
 
     # Info returns the full metadata.
-    info = await _invoke(
-        tool, {"action": "info", "session_id": sid}, dependencies=deps
-    )
+    info = await _invoke(tool, {"action": "info", "session_id": sid}, dependencies=deps)
     assert info["type"] == "conversation"
     assert info["state"] == "active"
     assert any(p["agent_id"] == bob.agent_id for p in info["participants"])
 
     # Close terminates.
-    closed = await _invoke(
-        tool, {"action": "close", "session_id": sid}, dependencies=deps
-    )
+    closed = await _invoke(tool, {"action": "close", "session_id": sid}, dependencies=deps)
     assert closed["state"] == "closed"
 
     await alice_hc.close()
@@ -256,7 +235,7 @@ async def test_context_search_finds_substring_in_session_wal() -> None:
     alice_hc = HubClient(link, hub=hub)
     bob_hc = HubClient(link, hub=hub)
     alice = await alice_hc.register(_agent("alice"), Passport(name="alice"), Resume())
-    bob = await bob_hc.register(_agent("bob"), Passport(name="bob"), Resume())
+    await bob_hc.register(_agent("bob"), Passport(name="bob"), Resume())
 
     session = await alice.open(type="conversation", target="bob")
     await session.send("policy framework adoption")
@@ -264,9 +243,7 @@ async def test_context_search_finds_substring_in_session_wal() -> None:
 
     tool = make_context_tool(alice)
     deps = {AGENT_CLIENT_DEP: alice, SESSION_DEP: session}
-    results = await _invoke(
-        tool, {"action": "search", "query": "framework"}, dependencies=deps
-    )
+    results = await _invoke(tool, {"action": "search", "query": "framework"}, dependencies=deps)
     assert len(results) == 1
     assert "framework" in results[0]["excerpt"]
 
@@ -283,12 +260,8 @@ async def test_context_quote_returns_recent_n_from_speaker() -> None:
 
     alice_hc = HubClient(link, hub=hub)
     bob_hc = HubClient(link, hub=hub)
-    alice = await alice_hc.register(
-        _agent("alice"), Passport(name="alice"), Resume(), attach_plugin=False
-    )
-    bob = await bob_hc.register(
-        _agent("bob"), Passport(name="bob"), Resume(), attach_plugin=False
-    )
+    alice = await alice_hc.register(_agent("alice"), Passport(name="alice"), Resume(), attach_plugin=False)
+    bob = await bob_hc.register(_agent("bob"), Passport(name="bob"), Resume(), attach_plugin=False)
 
     # Auto-ack on bob so the conversation activates.
     from autogen.beta.network import EV_SESSION_INVITE, EV_SESSION_INVITE_ACK, Envelope
@@ -304,10 +277,8 @@ async def test_context_quote_returns_recent_n_from_speaker() -> None:
             event_data={"session_id": envelope.session_id},
             causation_id=envelope.envelope_id,
         )
-        try:
+        with contextlib.suppress(Exception):
             await bob.send_envelope(ack)
-        except Exception:
-            pass
 
     bob.on_envelope(_ack)
 
@@ -318,9 +289,7 @@ async def test_context_quote_returns_recent_n_from_speaker() -> None:
 
     tool = make_context_tool(alice)
     deps = {AGENT_CLIENT_DEP: alice, SESSION_DEP: session}
-    quotes = await _invoke(
-        tool, {"action": "quote", "speaker": "alice", "recent_n": 2}, dependencies=deps
-    )
+    quotes = await _invoke(tool, {"action": "quote", "speaker": "alice", "recent_n": 2}, dependencies=deps)
     assert [q["text"] for q in quotes] == ["alice 2", "alice 3"]
 
     await alice_hc.close()
@@ -358,14 +327,10 @@ async def test_tasks_status_and_list_and_wait() -> None:
     tool = make_tasks_tool(bob)
     deps = {AGENT_CLIENT_DEP: bob}
 
-    listed = await _invoke(
-        tool, {"action": "list", "scope": "own", "state": "all"}, dependencies=deps
-    )
+    listed = await _invoke(tool, {"action": "list", "scope": "own", "state": "all"}, dependencies=deps)
     assert any(t["task_id"] == task_id for t in listed)
 
-    status = await _invoke(
-        tool, {"action": "status", "task_id": task_id}, dependencies=deps
-    )
+    status = await _invoke(tool, {"action": "status", "task_id": task_id}, dependencies=deps)
     assert status["state"] == "completed"
     assert status["result"] == "ok"
 
@@ -391,9 +356,7 @@ async def test_tasks_status_unknown_task_returns_error() -> None:
 
     tool = make_tasks_tool(alice)
     deps = {AGENT_CLIENT_DEP: alice}
-    result = await _invoke(
-        tool, {"action": "status", "task_id": "nonexistent"}, dependencies=deps
-    )
+    result = await _invoke(tool, {"action": "status", "task_id": "nonexistent"}, dependencies=deps)
     assert isinstance(result, str)
     assert "not found" in result
 

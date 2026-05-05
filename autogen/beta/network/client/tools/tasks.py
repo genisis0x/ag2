@@ -61,9 +61,7 @@ def make_tasks_tool(agent_client: "AgentClient") -> object:
 
     @tool
     async def tasks(
-        action: Literal[
-            "progress", "complete", "list", "status", "wait", "cancel"
-        ],
+        action: Literal["progress", "complete", "list", "status", "wait", "cancel"],
         *,
         payload: dict | None = None,
         result: Any | None = None,
@@ -149,9 +147,6 @@ def make_tasks_tool(agent_client: "AgentClient") -> object:
         if action == "cancel":
             return "Error: tasks(action='cancel') is not implemented"
 
-        return (
-            f"Error: unknown action {action!r}; choose from progress, complete, "
-            "list, status, wait"
-        )
+        return f"Error: unknown action {action!r}; choose from progress, complete, list, status, wait"
 
     return tasks

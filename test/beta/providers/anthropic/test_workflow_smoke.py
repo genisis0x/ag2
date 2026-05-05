@@ -23,11 +23,9 @@ import pytest
 
 from autogen.beta import Agent
 from autogen.beta.config import AnthropicConfig
-from autogen.beta.knowledge import DiskKnowledgeStore, MemoryKnowledgeStore
+from autogen.beta.knowledge import DiskKnowledgeStore
 from autogen.beta.network import (
     EV_HANDOFF,
-    EV_TEXT,
-    Envelope,
     Hub,
     HubClient,
     LocalLink,
@@ -82,7 +80,8 @@ async def _wait_for_state(
 @pytest.mark.anthropic
 @pytest.mark.asyncio()
 async def test_workflow_swarm_handoff_revert_close(
-    anthropic_config: AnthropicConfig, tmp_path,
+    anthropic_config: AnthropicConfig,
+    tmp_path,
 ) -> None:
     """3-agent swarm: triage hands off to eng via the transfer_to_eng
     tool; FromSpeaker(eng) reverts control to triage; triage closes
@@ -104,21 +103,14 @@ async def test_workflow_swarm_handoff_revert_close(
     )
     eng_agent = Agent(
         name="eng",
-        prompt=(
-            "You are a senior engineer. Answer the question concisely "
-            "in one or two sentences."
-        ),
+        prompt=("You are a senior engineer. Answer the question concisely in one or two sentences."),
         config=anthropic_config,
     )
 
     triage_hc = HubClient(link, hub=hub)
     eng_hc = HubClient(link, hub=hub)
-    triage = await triage_hc.register(
-        triage_agent, Passport(name="triage"), Resume(claimed_capabilities=["triage"])
-    )
-    eng = await eng_hc.register(
-        eng_agent, Passport(name="eng"), Resume(claimed_capabilities=["engineering"])
-    )
+    triage = await triage_hc.register(triage_agent, Passport(name="triage"), Resume(claimed_capabilities=["triage"]))
+    eng = await eng_hc.register(eng_agent, Passport(name="eng"), Resume(claimed_capabilities=["engineering"]))
 
     graph = TransitionGraph(
         initial_speaker=triage.agent_id,
@@ -149,12 +141,6 @@ async def test_workflow_swarm_handoff_revert_close(
         intent="triage routes deep questions to engineering",
     )
 
-    # Seed the workflow with the user question (manual send from triage's
-    # initial turn). The workflow's expected_next_speaker starts at triage,
-    # so this is allowed; triage's notify handler will then pick up eng's
-    # reply when it lands.
-    await triage.session if False else None  # noqa: keep imports happy
-
     # Drive the first turn directly via triage.agent.ask so we can
     # observe the handoff tool call. The session is in the LLM's
     # context via the plugin's NetworkContextPolicy.
@@ -179,9 +165,7 @@ async def test_workflow_swarm_handoff_revert_close(
     # either way the session should have at least one substantive event.
     wal = await hub.read_wal(session.session_id)
     handoff_envelopes = [e for e in wal if e.event_type == EV_HANDOFF]
-    assert handoff_envelopes, (
-        f"triage did not call transfer_to_eng; reply={reply.body!r}"
-    )
+    assert handoff_envelopes, f"triage did not call transfer_to_eng; reply={reply.body!r}"
 
     # After the handoff, expected_next_speaker is eng. Wait for eng's
     # notify handler (auto-attached default) to engage and reply.

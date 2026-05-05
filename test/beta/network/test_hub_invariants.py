@@ -28,6 +28,7 @@ Covers:
 """
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -52,8 +53,6 @@ from autogen.beta.network import (
     Resume,
     Rule,
 )
-from autogen.beta.stream import MemoryStream
-from autogen.beta.network.adapters.consulting import CONSULTING_TYPE
 from autogen.beta.network.adapters.conversation import (
     CONVERSATION_TYPE,
     ConversationAdapter,
@@ -61,7 +60,6 @@ from autogen.beta.network.adapters.conversation import (
 from autogen.beta.network.client.tools.delegate import make_delegate_tool
 from autogen.beta.network.hub.expectations import (
     AcksWithinEvaluator,
-    AuditHandler,
 )
 from autogen.beta.network.hub.layout import (
     by_capability_path,
@@ -81,8 +79,8 @@ from autogen.beta.network.session import (
     SessionState,
 )
 from autogen.beta.network.views.builtin import FullTranscript, WindowedSummary
+from autogen.beta.stream import MemoryStream
 from autogen.beta.task import (
-    TERMINAL_TASK_STATES,
     TaskMetadata,
     TaskSpec,
     TaskState,
@@ -131,10 +129,8 @@ def _ack_only_handler(client: "HubClient | object"):
             event_data={"session_id": env.session_id},
             causation_id=env.envelope_id,
         )
-        try:
+        with contextlib.suppress(Exception):
             await client.send_envelope(ack)
-        except Exception:
-            pass
 
     return _handle
 
@@ -241,9 +237,7 @@ async def test_create_session_enforces_max_concurrent_sessions() -> None:
     alice_hc = HubClient(link, hub=hub)
     bob_hc = HubClient(link, hub=hub)
     carol_hc = HubClient(link, hub=hub)
-    alice = await alice_hc.register(
-        _agent("alice"), Passport(name="alice"), Resume(), rule=capped
-    )
+    alice = await alice_hc.register(_agent("alice"), Passport(name="alice"), Resume(), rule=capped)
     bob = await bob_hc.register(_agent("bob"), Passport(name="bob"), Resume())
     carol = await carol_hc.register(_agent("carol"), Passport(name="carol"), Resume())
 
@@ -268,9 +262,7 @@ async def test_observe_task_enforces_max_concurrent_tasks() -> None:
 
     capped = Rule(limits=LimitsBlock(max_concurrent_tasks=1))
     hc = HubClient(link, hub=hub)
-    alice = await hc.register(
-        _agent("alice"), Passport(name="alice"), Resume(), rule=capped
-    )
+    alice = await hc.register(_agent("alice"), Passport(name="alice"), Resume(), rule=capped)
 
     await hub.observe_task(
         TaskMetadata(
@@ -377,9 +369,7 @@ async def test_inbox_pending_cleared_on_unregister() -> None:
     alice_hc = HubClient(link, hub=hub)
     bob_hc = HubClient(link, hub=hub)
     alice = await alice_hc.register(_agent("alice"), Passport(name="alice"), Resume())
-    bob = await bob_hc.register(
-        _agent("bob"), Passport(name="bob"), Resume(), attach_plugin=False
-    )
+    bob = await bob_hc.register(_agent("bob"), Passport(name="bob"), Resume(), attach_plugin=False)
     bob.on_envelope(_ack_only_handler(bob))
 
     session = await alice.open(type=CONVERSATION_TYPE, target=bob.agent_id)
@@ -419,9 +409,7 @@ async def test_delegate_returns_target_reply_without_dropping_fast_reply() -> No
     alice_hc = HubClient(link, hub=hub)
     bob_hc = HubClient(link, hub=hub)
     alice = await alice_hc.register(_agent("alice"), Passport(name="alice"), Resume())
-    await bob_hc.register(
-        _agent("bob", "the answer is 42"), Passport(name="bob"), Resume()
-    )
+    await bob_hc.register(_agent("bob", "the answer is 42"), Passport(name="bob"), Resume())
 
     delegate_tool = make_delegate_tool(alice)
     result = await _invoke(
@@ -449,9 +437,7 @@ async def test_delegate_fails_fast_when_session_closes_before_reply() -> None:
     alice_hc = HubClient(link, hub=hub)
     bob_hc = HubClient(link, hub=hub)
     alice = await alice_hc.register(_agent("alice"), Passport(name="alice"), Resume())
-    bob = await bob_hc.register(
-        _agent("bob"), Passport(name="bob"), Resume(), attach_plugin=False
-    )
+    bob = await bob_hc.register(_agent("bob"), Passport(name="bob"), Resume(), attach_plugin=False)
     # Bob acks the invite so the session opens, but never replies to
     # the prompt — alice's delegate would block until timeout without
     # the fail-fast path.
@@ -529,12 +515,8 @@ async def test_two_same_name_expectations_both_fire() -> None:
         version=1,
         participants=ParticipantSchema(min=2, max=2),
         expectations=[
-            Expectation(
-                name="acks_within", on_violation="audit", params={"seconds": 30}
-            ),
-            Expectation(
-                name="acks_within", on_violation="alt_audit", params={"seconds": 30}
-            ),
+            Expectation(name="acks_within", on_violation="audit", params={"seconds": 30}),
+            Expectation(name="acks_within", on_violation="alt_audit", params={"seconds": 30}),
         ],
     )
     metadata = SessionMetadata(
@@ -695,9 +677,7 @@ async def test_windowed_summary_projects_handoff_envelopes() -> None:
         _handoff("alice", tool="transfer_to_eng", reason="route this"),
         _text("bob", "msg2"),
     ]
-    events = await WindowedSummary(recent_n=10).project(
-        wal, participant_id="bob", session=metadata
-    )
+    events = await WindowedSummary(recent_n=10).project(wal, participant_id="bob", session=metadata)
     rendered = [_render(ev) for ev in events]
     assert any("Handed off via transfer_to_eng" in r for r in rendered)
 
@@ -714,13 +694,9 @@ async def test_concurrency_caps_zero_disables() -> None:
     hub = await Hub.open(store, ttl_sweep_interval=0, expectation_sweep_interval=0)
     link = LocalLink(hub)
 
-    no_caps = Rule(
-        limits=LimitsBlock(max_concurrent_sessions=0, max_concurrent_tasks=0)
-    )
+    no_caps = Rule(limits=LimitsBlock(max_concurrent_sessions=0, max_concurrent_tasks=0))
     alice_hc = HubClient(link, hub=hub)
-    alice = await alice_hc.register(
-        _agent("alice"), Passport(name="alice"), Resume(), rule=no_caps
-    )
+    alice = await alice_hc.register(_agent("alice"), Passport(name="alice"), Resume(), rule=no_caps)
 
     # Five concurrent conversations open without raising.
     peer_handles: list[HubClient] = []
@@ -827,9 +803,7 @@ async def test_fired_violations_cleared_on_terminal_session_transition() -> None
         version=1,
         participants=ParticipantSchema(min=2, max=2),
         expectations=[
-            Expectation(
-                name="acks_within", on_violation="audit", params={"seconds": 30}
-            ),
+            Expectation(name="acks_within", on_violation="audit", params={"seconds": 30}),
         ],
     )
     metadata = SessionMetadata(
@@ -873,9 +847,7 @@ async def test_set_resume_rewrites_by_capability_disk_file() -> None:
     assert json.loads(initial) == {}
 
     await alice.set_resume(Resume(claimed_capabilities=["math"]))
-    assert json.loads(await store.read(by_capability_path())) == {
-        "math": [alice.agent_id]
-    }
+    assert json.loads(await store.read(by_capability_path())) == {"math": [alice.agent_id]}
 
     # Adding a second claim leaves the first intact.
     await alice.set_resume(Resume(claimed_capabilities=["math", "policy"]))
@@ -906,9 +878,7 @@ async def test_delegate_fails_fast_on_session_expire() -> None:
     wait phase because ``open()`` raises before the wait begins)."""
     clock = _MockClock("2026-01-01T00:00:00+00:00")
     store = MemoryKnowledgeStore()
-    hub = await Hub.open(
-        store, clock=clock, ttl_sweep_interval=0, expectation_sweep_interval=0
-    )
+    hub = await Hub.open(store, clock=clock, ttl_sweep_interval=0, expectation_sweep_interval=0)
     link = LocalLink(hub)
 
     from autogen.beta.network.policies import AGENT_CLIENT_DEP
@@ -916,9 +886,7 @@ async def test_delegate_fails_fast_on_session_expire() -> None:
     alice_hc = HubClient(link, hub=hub)
     bob_hc = HubClient(link, hub=hub)
     alice = await alice_hc.register(_agent("alice"), Passport(name="alice"), Resume())
-    bob = await bob_hc.register(
-        _agent("bob"), Passport(name="bob"), Resume(), attach_plugin=False
-    )
+    bob = await bob_hc.register(_agent("bob"), Passport(name="bob"), Resume(), attach_plugin=False)
     bob.on_envelope(_ack_only_handler(bob))
 
     delegate_tool = make_delegate_tool(alice)

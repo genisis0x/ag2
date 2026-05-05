@@ -42,7 +42,7 @@ from autogen.beta.network.client.tools import (
 from autogen.beta.network.hub.audit import (
     AUDIT_KIND_EXPECTATION_VIOLATED,
 )
-from autogen.beta.network.policies import AGENT_CLIENT_DEP, SESSION_DEP
+from autogen.beta.network.policies import AGENT_CLIENT_DEP
 from autogen.beta.network.session import (
     Expectation,
     ParticipantSchema,
@@ -113,9 +113,7 @@ async def test_expectation_sweeper_fires_violations_in_background() -> None:
 
     store = MemoryKnowledgeStore()
     # Sweeper runs every 50ms; default expectation evaluator is registered.
-    hub = await Hub.open(
-        store, ttl_sweep_interval=0, expectation_sweep_interval=0.05
-    )
+    hub = await Hub.open(store, ttl_sweep_interval=0, expectation_sweep_interval=0.05)
     hub.register_adapter(_ImmediateAdapter())
     link = LocalLink(hub)
 
@@ -133,9 +131,7 @@ async def test_expectation_sweeper_fires_violations_in_background() -> None:
     audit = await hub._audit_log.read_all()
     new_records = audit[pre_audit:]
     violations = [
-        r for r in new_records
-        if r["kind"] == AUDIT_KIND_EXPECTATION_VIOLATED
-        and r["session_id"] == session.session_id
+        r for r in new_records if r["kind"] == AUDIT_KIND_EXPECTATION_VIOLATED and r["session_id"] == session.session_id
     ]
     assert len(violations) >= 1
     assert violations[0]["expectation"] == "max_silence"
@@ -248,9 +244,7 @@ async def test_cross_tool_flow_exercises_all_six_tools() -> None:
     deps: dict = {AGENT_CLIENT_DEP: alice}
 
     # peers(action="find", capability="math") → bob
-    found = await _invoke(
-        peers, {"action": "find", "capability": "math"}, dependencies=deps
-    )
+    found = await _invoke(peers, {"action": "find", "capability": "math"}, dependencies=deps)
     assert isinstance(found, list)
     assert any(p["name"] == "bob" for p in found)
     assert all(p["name"] != "alice" for p in found)  # excludes self
@@ -273,9 +267,7 @@ async def test_cross_tool_flow_exercises_all_six_tools() -> None:
     assert "posted envelope" in say_result
 
     # tasks(action="list", scope="own") — alice has no tasks.
-    listed = await _invoke(
-        tasks, {"action": "list", "scope": "own"}, dependencies=deps
-    )
+    listed = await _invoke(tasks, {"action": "list", "scope": "own"}, dependencies=deps)
     assert listed == []
 
     # context(action="search", query="hello", scope="session")
@@ -312,8 +304,7 @@ def test_handlers_module_does_not_touch_hub_privates() -> None:
     from pathlib import Path
 
     handlers_path = (
-        Path(__file__).parent.parent.parent.parent
-        / "autogen" / "beta" / "network" / "client" / "handlers.py"
+        Path(__file__).parent.parent.parent.parent / "autogen" / "beta" / "network" / "client" / "handlers.py"
     )
     text = handlers_path.read_text()
     forbidden = (
@@ -323,6 +314,4 @@ def test_handlers_module_does_not_touch_hub_privates() -> None:
         "_hub._tasks",
     )
     found = [pat for pat in forbidden if pat in text]
-    assert not found, (
-        f"handlers.py must go through HubClient, not Hub privates: {found}"
-    )
+    assert not found, f"handlers.py must go through HubClient, not Hub privates: {found}"

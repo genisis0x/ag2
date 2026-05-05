@@ -35,8 +35,7 @@ def _metadata_dict(metadata: Any) -> dict[str, Any]:
         "state": metadata.state.value,
         "creator_id": metadata.creator_id,
         "participants": [
-            {"agent_id": p.agent_id, "role": p.role.value, "order": p.order}
-            for p in metadata.participants
+            {"agent_id": p.agent_id, "role": p.role.value, "order": p.order} for p in metadata.participants
         ],
         "knobs": dict(metadata.knobs),
         "labels": dict(metadata.labels),
@@ -84,9 +83,7 @@ def make_sessions_tool(agent_client: "AgentClient") -> object:
 
         if action == "list":
             include_terminal = state == "all"
-            metas = await hub.list_sessions(
-                agent_id=actual.agent_id, include_terminal=include_terminal
-            )
+            metas = await hub.list_sessions(agent_id=actual.agent_id, include_terminal=include_terminal)
             return [
                 {
                     "session_id": m.session_id,

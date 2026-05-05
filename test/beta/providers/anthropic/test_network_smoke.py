@@ -68,9 +68,7 @@ async def _wait_for_text_count(
         if count >= expected:
             return count
         await asyncio.sleep(0.2)
-    return sum(
-        1 for e in (await hub.read_wal(session_id)) if e.event_type == EV_TEXT
-    )
+    return sum(1 for e in (await hub.read_wal(session_id)) if e.event_type == EV_TEXT)
 
 
 @pytest.mark.anthropic
@@ -104,10 +102,7 @@ async def test_peers_then_delegate_consults_a_specialist(
     )
     bob_agent = Agent(
         name="bob",
-        prompt=(
-            "You are a math specialist. Answer with just the numeric result, "
-            "no explanation."
-        ),
+        prompt=("You are a math specialist. Answer with just the numeric result, no explanation."),
         config=anthropic_config,
     )
 
@@ -116,15 +111,13 @@ async def test_peers_then_delegate_consults_a_specialist(
         Passport(name="alice"),
         Resume(summary="multi-agent coordinator"),
     )
-    bob = await bob_hc.register(
+    await bob_hc.register(
         bob_agent,
         Passport(name="bob"),
         Resume(claimed_capabilities=["math"], summary="math specialist"),
     )
 
-    reply = await alice.agent.ask(
-        "Find a math specialist on the network and ask them: what is 12 times 17?"
-    )
+    reply = await alice.agent.ask("Find a math specialist on the network and ask them: what is 12 times 17?")
 
     assert reply.body is not None
     assert "204" in reply.body, f"expected 204 in alice's reply, got: {reply.body!r}"
@@ -179,10 +172,7 @@ async def test_5way_discussion_round_robin_via_say_tool(
 
     # Alice kicks off with a manual send to seed the conversation;
     # the adapter then rotates through bob → carol → dave → erin.
-    await session.send(
-        "Let's debate: has Python overtaken R as the lingua franca of "
-        "scientific computing?"
-    )
+    await session.send("Let's debate: has Python overtaken R as the lingua franca of scientific computing?")
 
     # Wait for 5 EV_TEXT envelopes total (alice's seed + 4 LLM responses).
     count = await _wait_for_text_count(hub, session.session_id, expected=5, timeout=90.0)
@@ -192,9 +182,7 @@ async def test_5way_discussion_round_robin_via_say_tool(
     wal = await hub.read_wal(session.session_id)
     speakers = [e.sender_id for e in wal if e.event_type == EV_TEXT][:5]
     expected_order = [c.agent_id for c in clients]
-    assert speakers == expected_order, (
-        f"round-robin order broken; expected {expected_order}, got {speakers}"
-    )
+    assert speakers == expected_order, f"round-robin order broken; expected {expected_order}, got {speakers}"
 
     # Each speaker actually contributed substantive text (>10 chars).
     contributions = [e.event_data.get("text", "") for e in wal if e.event_type == EV_TEXT][:5]

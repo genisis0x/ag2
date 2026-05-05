@@ -2,12 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""M3 smoke tests — real-LLM verification of the network tool surface.
+"""Network tool surface smoke tests against a real LLM.
 
-These tests exercise the full M3 exit criterion from ``design/PLAN.md``:
-LLM-driven agents calling ``peers`` / ``delegate`` / ``say`` /
-``sessions`` to coordinate via the network. They use ``claude-haiku-4-5``
-for cost.
+LLM-driven agents call ``peers`` / ``delegate`` / ``say`` /
+``sessions`` to coordinate via the network. They use
+``claude-haiku-4-5`` for cost.
 
 The tests load ``.env`` from the repo root so they run without shell
 env setup; they ``pytest.skip`` if ``ANTHROPIC_API_KEY`` is absent.
@@ -142,9 +141,8 @@ async def test_5way_discussion_round_robin_via_say_tool(
 ) -> None:
     """Five LLM agents in a round-robin discussion. Each speaker takes
     one turn via the ``say`` tool; the adapter rotates ``expected_next_speaker``
-    after every accepted envelope. Validates the M3 exit criterion that
-    a multi-party LLM-driven session works end-to-end with bounded
-    prompt size."""
+    after every accepted envelope. Verifies that a multi-party
+    LLM-driven session works end-to-end with bounded prompt size."""
     hub = await Hub.open(
         MemoryKnowledgeStore(),
         ttl_sweep_interval=0,

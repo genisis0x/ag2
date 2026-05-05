@@ -19,10 +19,10 @@ def make_id() -> str:
     """Return a fresh UUID-based identifier as a 32-char hex string.
 
     Prefers UUID7 (time-ordered, cross-process sortable) when available;
-    falls back to UUID4 on older Pythons. Cross-process ordering becomes
-    load-bearing when ``WsLink`` ships in Phase 3; in V1 the hub stamps
-    every envelope under a single per-session lock so process-local
-    ordering is sufficient.
+    falls back to UUID4 on older Pythons. The in-process hub stamps every
+    envelope under a per-session lock so process-local ordering is
+    already serialised; the time-ordered prefix matters once the
+    transport spans processes.
     """
     if hasattr(uuid, "uuid7"):
         return uuid.uuid7().hex  # type: ignore[attr-defined]

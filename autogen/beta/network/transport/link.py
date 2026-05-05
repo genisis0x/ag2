@@ -10,8 +10,8 @@ Two roles:
   one per process per hub.
 * ``LinkEndpoint`` — hub-side handle to one connected client.
 
-V1 ships ``LocalLink`` only (see ``.local``). Phase 3 adds ``WsLink``
-on the same Protocol surface.
+``LocalLink`` (see ``.local``) is the in-process implementation.
+Cross-process transports satisfy the same Protocol surface.
 """
 
 from collections.abc import AsyncIterator

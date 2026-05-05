@@ -11,9 +11,9 @@ Two actions:
 * ``quote``  — return the last N envelopes a given speaker posted in
   the current (or specified) session.
 
-V1 ships substring search only. Vector / semantic search composes via
-the existing ``KnowledgeStore`` infrastructure when configured; the
-tool surface stays the same.
+Substring search only. Vector / semantic search composes via the
+existing ``KnowledgeStore`` infrastructure when configured; the tool
+surface stays the same.
 """
 
 from typing import TYPE_CHECKING, Literal
@@ -99,12 +99,10 @@ def make_context_tool(agent_client: "AgentClient") -> object:
                 return results
             if scope == "knowledge":
                 # Knowledge-scope search is best-effort over the calling
-                # agent's own KnowledgeStore. Cross-peer knowledge bridge
-                # is deferred to AG2 Cloud (see network_plugin.md).
-                # V1 returns an empty list when the store has no
-                # primitive for substring search — semantic search lives
-                # in framework-core ``recall`` and is invoked by the
-                # agent's own loop, not by this tool.
+                # agent's own KnowledgeStore. Returns an empty list when
+                # the store has no primitive for substring search —
+                # semantic search lives in framework-core ``recall`` and
+                # is invoked by the agent's own loop, not by this tool.
                 return []
 
         if action == "quote":

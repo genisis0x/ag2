@@ -2,16 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Built-in expectation evaluators + violation handlers (M3).
+"""Built-in expectation evaluators + violation handlers.
 
 Expectations are protocol-shape contracts declared on
 ``SessionManifest.expectations``. The hub evaluates them on a periodic
 sweeper tick — independently of the per-envelope ``validate_send`` /
 ``on_accepted`` path. ``validate_send`` rejects bad **sends**;
 expectations react to bad **silence** (or bad pacing).
-
-V1 ships 3 evaluators and 3 handlers; the rest are Phase 2 (see
-``design/sessions.md`` and ``design/PLAN.md``).
 
 Evaluators
 ----------
@@ -110,8 +107,8 @@ class ViolationHandler(Protocol):
     Handlers are async because they may post envelopes or transition
     sessions. They must be tolerant of duplicate calls — the sweeper
     deduplicates per (session, expectation, violator) before invoking,
-    but transient re-fires across hub restarts are possible until the
-    fired-violation cache is persisted (Phase 2).
+    but transient re-fires across hub restarts are possible since the
+    fired-violation cache is in-memory only.
     """
 
     name: str

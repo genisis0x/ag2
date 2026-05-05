@@ -4,16 +4,17 @@
 
 """``Hub`` — registry, dispatcher, persistence root.
 
-M2 surface: registry + envelope dispatch (M1) + session machinery and
-adapter state cache + TTL sweeper. The expectation sweeper, audit log,
-and capability index are M3.
+The hub owns the registry (passports / resumes / rules / skills + name
+and capability indexes), the session and task state machines, the WAL,
+the dispatch path, the adapter state cache, the audit log, and the
+internal sweepers (TTL + expectations).
 
 Session machinery:
 * Adapter registry by ``(manifest.type, manifest.version)``.
 * Per-session ``AdapterState`` cache, folded under the per-session
   WAL lock so ``validate_send`` and ``on_accepted`` are O(1).
-* Single-recipient consulting handshake: ``create_session`` posts
-  ``EV_SESSION_INVITE``, awaits ``EV_SESSION_INVITE_ACK`` (timeout
+* Invite handshake: ``create_session`` posts ``EV_SESSION_INVITE``,
+  awaits ``EV_SESSION_INVITE_ACK`` from every invitee (timeout
   ``invite_ack_timeout``), broadcasts ``EV_SESSION_OPENED`` on quorum.
 * TTL: parsed from ``Rule.limits.session_ttl_default`` /
   ``task_ttl_default`` (or per-session override). The ``_TtlSweeper``
@@ -188,7 +189,7 @@ class Hub:
         self._expectation_sweep_interval = expectation_sweep_interval
         self._invite_ack_timeout = invite_ack_timeout
 
-        # Audit log + expectation registries (M3).
+        # Audit log + expectation registries.
         self._audit_log = AuditLog(store)
         self._expectation_evaluators: dict[str, ExpectationEvaluator] = {}
         self._violation_handlers: dict[str, ViolationHandler] = {}
@@ -232,8 +233,8 @@ class Hub:
         # enforcement. Incremented on dispatch to that recipient,
         # decremented when the recipient posts any envelope (treating
         # any outbound activity as "I'm processing my inbox"). A
-        # best-effort approximation in V1 — Phase 3 with WS transport
-        # gets per-session ack semantics.
+        # best-effort approximation; per-session ack semantics require
+        # a transport with ack frames.
         self._inbox_pending: dict[str, int] = {}
 
         # Transport-side state.
@@ -268,10 +269,11 @@ class Hub:
 
         ``register_default_adapters=True`` (default) registers the
         built-in adapters (``consulting@v1``, ``conversation@v1``,
-        ``discussion@v1``) and the M3 expectation evaluators / violation
-        handlers (``acks_within`` / ``reply_within`` / ``max_silence``,
-        ``audit`` / ``notify_session`` / ``auto_close``) so simple test
-        setups don't need explicit registration calls.
+        ``discussion@v1``) and the built-in expectation evaluators /
+        violation handlers (``acks_within`` / ``reply_within`` /
+        ``max_silence``, ``audit`` / ``notify_session`` /
+        ``auto_close``) so simple test setups don't need explicit
+        registration calls.
 
         Set ``expectation_sweep_interval=0`` to disable the expectation
         sweeper entirely (tests usually do this to avoid background
@@ -301,8 +303,8 @@ class Hub:
     async def hydrate(self) -> None:
         """Walk the store; rebuild caches. Idempotent.
 
-        M2 hydrates identities (M1) plus sessions and tasks. Active
-        session WALs are re-folded through their adapter so the
+        Loads identities, sessions, and tasks from disk. Active session
+        WALs are re-folded through their adapter so the
         ``_adapter_states`` cache is rebuilt deterministically.
         """
         self._passports.clear()
@@ -413,7 +415,7 @@ class Hub:
             )
         return adapter
 
-    # ── Expectation registry (M3) ───────────────────────────────────────────
+    # ── Expectation registry ────────────────────────────────────────────────
 
     def register_expectation_evaluator(self, evaluator: ExpectationEvaluator) -> None:
         """Register an evaluator keyed by ``evaluator.name``.
@@ -485,7 +487,7 @@ class Hub:
                 if terminal:
                     break
 
-    # ── Registration (M1) ───────────────────────────────────────────────────
+    # ── Registration ────────────────────────────────────────────────────────
 
     async def register(
         self,
@@ -574,9 +576,9 @@ class Hub:
 
             # Delete on-disk identity files. Without this the next
             # ``hydrate()`` would re-load the unregistered agent from
-            # disk, breaking the M1 hydrate contract. Sessions and tasks
-            # the agent participated in are kept for audit / read; only
-            # the per-agent identity files are removed.
+            # disk. Sessions and tasks the agent participated in are
+            # kept for audit / read; only the per-agent identity files
+            # are removed.
             await self._store.delete(passport_path(agent_id))
             await self._store.delete(resume_path(agent_id))
             await self._store.delete(rule_path(agent_id))
@@ -650,7 +652,7 @@ class Hub:
 
         return results[:limit]
 
-    # ── Mutation (M1) ────────────────────────────────────────────────────────
+    # ── Mutation ────────────────────────────────────────────────────────────
 
     async def set_resume(self, agent_id: str, resume: Resume) -> None:
         if agent_id not in self._passports:
@@ -746,7 +748,8 @@ class Hub:
         Outcome must be one of the terminal task states
         (``COMPLETED`` / ``FAILED`` / ``EXPIRED``); other states are
         ignored. ``latency_ms``, when provided, replaces the prior
-        ``p50_latency_ms`` (full reservoir sampling is Phase 2).
+        ``p50_latency_ms`` (single-sample stand-in for a future
+        reservoir).
 
         ``task_id`` (when provided) is used to dedup: a single task
         contributing twice to ``Resume.observed.n`` (e.g. cascade
@@ -813,11 +816,11 @@ class Hub:
     ) -> SessionMetadata:
         """Allocate ``session_id``, post invites, await acks, return metadata.
 
-        For consulting (M2 only) this is a single-recipient handshake:
-        one ``EV_SESSION_INVITE`` to the respondent, one
-        ``EV_SESSION_INVITE_ACK`` back, transition to ``ACTIVE``,
-        broadcast ``EV_SESSION_OPENED``. Times out after
-        ``invite_ack_timeout`` if the ack does not arrive.
+        Posts ``EV_SESSION_INVITE`` to every invitee, awaits an
+        ``EV_SESSION_INVITE_ACK`` from each (the handshake is
+        all-or-nothing — any reject fails creation), transitions to
+        ``ACTIVE``, and broadcasts ``EV_SESSION_OPENED``. Times out
+        after ``invite_ack_timeout`` if the acks do not arrive.
         """
         if creator_id not in self._passports:
             raise NotFoundError(f"creator not registered: {creator_id}")
@@ -1429,7 +1432,7 @@ class Hub:
         if envelope.sender_id not in metadata.rejected_by:
             metadata.rejected_by.append(envelope.sender_id)
         await self._persist_session_metadata(metadata)
-        # M2: any reject fails the session (consulting all-or-nothing).
+        # All-or-nothing handshake: any reject fails the session.
         await self._transition_session(
             metadata.session_id, SessionState.CLOSED, "invite_rejected"
         )

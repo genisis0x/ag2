@@ -4,15 +4,15 @@
 
 """Identity records: ``Passport``, ``Resume``, ``AgentRuntime``.
 
-Three records back every registered agent — see ``design/identity.md``:
+Three records back every registered agent:
 
 * ``Passport`` — immutable id + billing facts. Hub-stamps ``agent_id``
   at registration.
 * ``Resume`` — capability claims and observed track record. Mutates
   over time via tenant-driven ``set_resume`` and hub-driven
   ``record_observation``.
-* ``SKILL.md`` — Markdown document with Anthropic frontmatter, stored
-  as plain text in M1 (frontmatter parser arrives in M3).
+* ``SKILL.md`` — Markdown document with Anthropic-style frontmatter,
+  parsed by ``client/skill_render.py``.
 
 ``AgentRuntime`` is hub-owned bookkeeping for the current connection
 (transport binding, last heartbeat). It lives next to the identity
@@ -46,7 +46,7 @@ class CostProfile:
 class AuthBlock:
     """How the hub validates this identity at the connection handshake."""
 
-    scheme: str = "none"  # "none" | "api_key" (Phase 3) | future
+    scheme: str = "none"  # "none" | future schemes
     issuer: str | None = None
     audience: str | None = None
     key_fingerprint: str | None = None
@@ -114,7 +114,7 @@ class Resume:
 
     Tenant code provides ``claimed_capabilities``, ``domains``,
     ``summary``, and ``examples`` at registration. The hub mutates
-    ``observed`` on terminal task events (M3); tenant code may also
+    ``observed`` on terminal task events; tenant code may also
     replace the resume via ``Hub.set_resume(...)``.
     """
 

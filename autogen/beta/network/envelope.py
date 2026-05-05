@@ -4,14 +4,11 @@
 
 """Envelope — the wire shape for every message between agents.
 
-Every Agent-to-Agent exchange (post-M2) happens inside a session and
-the carrier is an ``Envelope``. Envelopes are JSON-serialisable, hub-
-stamped at ``post_envelope``, and persisted to the per-session WAL.
-``audience`` is the addressing primitive: ``None`` broadcasts within
-the session, a list targets a subset.
-
-Streaming chunks use a separate transport-level ``chunk`` frame (Phase
-2 surface) and are not envelopes — they bypass the WAL entirely.
+Every Agent-to-Agent exchange happens inside a session and the carrier
+is an ``Envelope``. Envelopes are JSON-serialisable, hub-stamped at
+``post_envelope``, and persisted to the per-session WAL. ``audience``
+is the addressing primitive: ``None`` broadcasts within the session,
+a list targets a subset.
 """
 
 import json
@@ -38,16 +35,16 @@ Priority = Literal["background", "normal", "urgent"]
 
 
 # ── Stable event-type names ──────────────────────────────────────────────────
-# V1 ships a fixed set; new names are added in code, not at runtime. User-
-# defined event types may be posted with arbitrary strings (no namespace
-# check in V1) — the framework only special-cases the names below.
+# Fixed set; new names are added in code, not at runtime. User-defined event
+# types may be posted with arbitrary strings — the framework only
+# special-cases the names below.
 
 EV_TEXT = "ag2.msg.text"
 
-# Tool-driven workflow transition signal — see workflow.md. ``event_data``
-# carries ``{"tool": <tool_name>, "reason": <free-form>}``. Read by
-# ``WorkflowAdapter``'s ``ToolCalled`` condition. Adapter-agnostic — any
-# future adapter that wants tool-driven transitions reads it the same way.
+# Tool-driven workflow transition signal. ``event_data`` carries
+# ``{"tool": <tool_name>, "reason": <free-form>}``. Read by
+# ``WorkflowAdapter``'s ``ToolCalled`` condition; any adapter that wants
+# tool-driven transitions can read it the same way.
 EV_HANDOFF = "ag2.handoff"
 
 EV_SESSION_INVITE = "ag2.session.invite"
@@ -59,15 +56,9 @@ EV_SESSION_EXPIRED = "ag2.session.expired"
 
 EV_EXPECTATION_VIOLATED = "ag2.expectation.violated"
 
-# Phase 2/3 event types removed from V1: ``EV_SESSION_IDLE``,
-# ``EV_SESSION_QUORUM_CHANGED``, ``EV_TASK_*``, ``EV_PEER_*``,
-# ``EV_PARTICIPANT_REMOVED``, ``EV_ERROR``. None of them were emitted
-# by the hub. ``max_silence`` expectations cover idle-detection;
-# task lifecycle is mirrored as Python events on the agent's own
-# stream (see :mod:`autogen.beta.network.task_mirror`); peer
-# reachability needs the WebSocket transport (Phase 3); participant
-# removal needs the ``remove`` violation handler (Phase 2). Re-add
-# the constant in the same milestone the producer ships.
+# Idle-detection rides on ``max_silence`` expectations; task lifecycle is
+# mirrored as Python events on the agent's own stream
+# (see :mod:`autogen.beta.network.task_mirror`).
 
 
 @dataclass(slots=True)
@@ -87,7 +78,9 @@ class Envelope:
       reply path; ``Rule.limits.delegation_depth`` caps it.
     * ``ttl_seconds`` — per-envelope TTL. ``None`` defers to the
       session's ``expires_at``.
-    * ``idempotency_key`` — Phase 3 dedup key; ignored in V1.
+    * ``idempotency_key`` — dedup key reserved for cross-process
+      transports; the in-process hub serialises under a per-session lock
+      and ignores it.
     """
 
     session_id: str
@@ -102,7 +95,7 @@ class Envelope:
     trace_id: str | None = None
     priority: Priority = "normal"
     depth: int = 0
-    idempotency_key: str | None = None  # Phase 3
+    idempotency_key: str | None = None
 
     created_at: str = ""  # ISO-Z, hub-stamped on accept
     ttl_seconds: int | None = None

@@ -12,9 +12,6 @@ Default expectations:
 * ``max_silence(3600s, audit)`` — light enforcement; conversations may
   legitimately span hours of idle time.
 
-The expectation sweeper that enforces these lands in cut 3.3. M3
-declares the expectations on the manifest so they are durable on disk.
-
 Task envelopes (``ag2.task.*``) and session-protocol envelopes
 (``ag2.session.*``) bypass conversation's send rule the same way
 consulting does — they're hub bookkeeping or task lifecycle observed
@@ -149,7 +146,7 @@ class ConversationAdapter:
             return
         if envelope.event_type != EV_TEXT:
             # Unknown event types accepted as informational data — same
-            # convention as consulting. Adapters may tighten in M4 if needed.
+            # convention as consulting.
             return
         participant_ids = {p.agent_id for p in metadata.participants}
         if envelope.sender_id not in participant_ids:

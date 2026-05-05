@@ -4,14 +4,14 @@
 
 """``LocalLink`` — in-memory duplex implementing the ``Link`` Protocol.
 
-V1's only transport. Each ``LocalLink.client()`` call creates a paired
-``LocalLinkClient`` / ``LocalLinkEndpoint`` sharing two ``asyncio.Queue``s
-(client→hub and hub→client). The hub is notified of the new endpoint
-via ``LocalLink.on_connect`` so it can spawn a frame-processor task.
+Each ``LocalLink.client()`` call creates a paired ``LocalLinkClient`` /
+``LocalLinkEndpoint`` sharing two ``asyncio.Queue``s (client→hub and
+hub→client). The hub is notified of the new endpoint via
+``LocalLink.on_connect`` so it can spawn a frame-processor task.
 
-Tests run real protocol traffic through the same Frame vocabulary used
-by Phase 3's ``WsLink`` — no socket, no serialization overhead, but
-the protocol coverage is identical.
+Tests run real protocol traffic through the same Frame vocabulary that
+a wire transport would use — no socket, no serialization overhead, but
+identical protocol coverage.
 
 ``LocalLinkClient.open()`` is a no-op (connection is implicit at
 ``client()`` time). Heartbeat refresh is synchronous: every frame
@@ -134,9 +134,9 @@ class LocalLink:
 
     Each ``client()`` call constructs a fresh endpoint and immediately
     hands it to ``Hub.attach_endpoint`` so the hub spawns its
-    frame-processor task. WS transport (Phase 3) follows the same
-    shape — the WebSocket server's connect handler is what calls
-    ``Hub.attach_endpoint`` there.
+    frame-processor task. A wire transport follows the same shape —
+    its connect handler calls ``Hub.attach_endpoint`` once the
+    connection is up.
     """
 
     def __init__(self, hub: "Hub") -> None:

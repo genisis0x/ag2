@@ -4,11 +4,8 @@
 
 """``ClientTask`` — client-side handle for an observed remote task.
 
-Wraps a ``TaskMetadata`` snapshot from the hub. Provides ``status`` /
-``wait`` / refresh helpers without exposing the full hub surface.
-
-M2 ships ``status`` and refresh; ``wait`` (subscription-based) and
-``cancel`` (Phase 2) arrive in M3.
+Wraps a ``TaskMetadata`` snapshot from the hub and provides refresh
+helpers without exposing the full hub surface.
 
 The framework-core ``autogen.beta.task.Task`` is the *owner-side*
 lifecycle (the one constructed inside ``async with agent.task(...)``).

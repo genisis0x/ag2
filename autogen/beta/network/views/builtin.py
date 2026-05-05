@@ -4,14 +4,11 @@
 
 """Built-in ``ViewPolicy`` implementations.
 
-V1 ships ``FullTranscript`` (M2) and ``WindowedSummary`` (M3).
-``Composite`` is Phase 2.
-
-``WindowedSummary`` keeps a bounded tail of recent ``EV_TEXT`` envelopes
-and replaces older ones with a single :class:`CompactionSummary` event.
-M3 ships a static no-LLM summary (sender ids + count); composing with
-framework-core ``compact.SummarizeCompact`` for semantic summaries is
-Phase 2.
+* :class:`FullTranscript` — projects every visible substantive envelope
+  verbatim.
+* :class:`WindowedSummary` — keeps a bounded tail of recent envelopes
+  and replaces older ones with a single :class:`CompactionSummary`
+  event (static stat-style summary, no LLM call).
 """
 
 from autogen.beta.compact import CompactionSummary
@@ -101,11 +98,9 @@ class WindowedSummary:
     is recognised by ``autogen/beta/policies/conversation.py`` so it
     renders correctly in the LLM-facing message stream.
 
-    M3 generates a static stat-style summary
-    (``"Earlier in this session: N messages from a, b."``) without an
-    LLM call. Phase 2 makes the compactor pluggable so callers can pass
-    a ``CompactStrategy`` (e.g. ``SummarizeCompact``) to produce
-    semantic summaries.
+    The summary is a static stat-style line
+    (``"Earlier in this session: N messages from a, b."``) — no LLM
+    call.
     """
 
     name = "windowed_summary"

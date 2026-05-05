@@ -2,16 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Internal sweepers — TTL (M2) and expectations (M3).
+"""Internal sweepers — TTL + expectations.
 
-V1 ships ``_TtlSweeper`` in M2 and ``_ExpectationSweeper`` in M3, both
-built on the ``_IntervalSweeper`` primitive.
-
-Sweepers are spawned by ``Hub.start()`` and cancelled by ``Hub.close()``.
-``Hub.open()`` calls ``start()`` automatically; tests that don't want
-background timers can construct the hub with ``ttl_sweep_interval=0``
-(disables the TTL sweeper entirely) or
-``expectation_sweep_interval=0`` (disables the expectation sweeper).
+Both built on the ``_IntervalSweeper`` primitive. Sweepers are spawned
+by ``Hub.start()`` and cancelled by ``Hub.close()``. ``Hub.open()``
+calls ``start()`` automatically; tests that don't want background
+timers can construct the hub with ``ttl_sweep_interval=0`` (disables
+the TTL sweeper entirely) or ``expectation_sweep_interval=0`` (disables
+the expectation sweeper).
 """
 
 import asyncio
@@ -24,8 +22,7 @@ class _IntervalSweeper:
     """Run a coroutine on a fixed interval until cancelled.
 
     Exceptions in the coroutine are swallowed so a transient failure
-    in one tick does not kill the sweeper. Production builds should
-    log; M2 keeps quiet.
+    in one tick does not kill the sweeper.
     """
 
     def __init__(

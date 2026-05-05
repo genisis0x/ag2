@@ -47,9 +47,9 @@ Network foundation:
 Tests:
 - `test/beta/test_task.py`
 - `test/beta/network/__init__.py`
-- `test/beta/network/test_m1_foundation.py`
+- `test/beta/network/test_foundation.py`
 
-**Exit criteria:** two `AgentClient`s register through `LocalLink` and exchange raw envelopes. `Hub.hydrate()` rebuilds passport/resume/rule caches from disk. Validated by `test_m1_foundation.py` (5 tests) and `test_task.py` (22 tests).
+**Exit criteria:** two `AgentClient`s register through `LocalLink` and exchange raw envelopes. `Hub.hydrate()` rebuilds passport/resume/rule caches from disk. Validated by `test_foundation.py` (5 tests) and `test_task.py` (22 tests).
 
 **Reviewer notes for PR1:**
 - `hub/core.py` is a large file (~1700 LOC) that includes routing hooks for adapters and observability features that are inert until PR2/PR3 ship the calling code. M1 tests exercise registration, raw envelope dispatch, and hydrate; the rest is structural scaffolding.
@@ -57,7 +57,7 @@ Tests:
 
 **Validation command:**
 ```
-.venv-beta/bin/pytest test/beta/test_task.py test/beta/network/test_m1_foundation.py -v
+.venv-beta/bin/pytest test/beta/test_task.py test/beta/network/test_foundation.py -v
 ```
 
 ## PR2 — Consulting loop (M2)
@@ -80,9 +80,9 @@ Client surface:
 - `autogen/beta/network/client/tools/{__init__,say,delegate}.py`
 
 Tests:
-- `test/beta/network/test_m2_consulting.py`
+- `test/beta/network/test_consulting.py`
 
-**Exit criteria:** Alice's LLM calls `delegate(target="bob", prompt="...", blocking=True)`. Bob's notify handler runs Bob's LLM. Bob replies. Consulting auto-closes via the adapter's `on_accepted`. Validated by `test_m2_consulting.py` (8 tests).
+**Exit criteria:** Alice's LLM calls `delegate(target="bob", prompt="...", blocking=True)`. Bob's notify handler runs Bob's LLM. Bob replies. Consulting auto-closes via the adapter's `on_accepted`. Validated by `test_consulting.py` (8 tests).
 
 **Reviewer notes for PR2:**
 - `views/builtin.py` ships `WindowedSummary` (added in M3) at HEAD state alongside `FullTranscript`. M2 tests only exercise `FullTranscript`; M3 tests will exercise `WindowedSummary`.
@@ -91,7 +91,7 @@ Tests:
 
 **Validation command:**
 ```
-.venv-beta/bin/pytest test/beta/network/test_m2_consulting.py -v
+.venv-beta/bin/pytest test/beta/network/test_consulting.py -v
 ```
 
 ## PR3 — Multi-party + observability (M3)
@@ -114,15 +114,15 @@ Client:
 
 Tests:
 - `test/beta/network/_helpers.py` (`_ScriptedConfig` for multi-turn LLM tests)
-- `test/beta/network/test_m3_conversation.py`
-- `test/beta/network/test_m3_discussion.py`
-- `test/beta/network/test_m3_expectations.py`
-- `test/beta/network/test_m3_hydrate_scale.py`
-- `test/beta/network/test_m3_observation.py`
-- `test/beta/network/test_m3_tools.py`
+- `test/beta/network/test_conversation.py`
+- `test/beta/network/test_discussion.py`
+- `test/beta/network/test_expectations.py`
+- `test/beta/network/test_hydrate_scale.py`
+- `test/beta/network/test_observation.py`
+- `test/beta/network/test_tools.py`
 - `test/beta/providers/anthropic/test_network_smoke.py`
 
-**Exit criteria:** five LLMs round-robin through a discussion via `say`; alice's LLM autonomously calls `peers(action="find", capability="math")` → `delegate(target="bob", ...)` → returns `"204"` for `"12 × 17"` (anthropic smoke). Per-(session, expectation, violator) dedup, audit log, capability observation, and skill rendering all exercised by `test_m3_*.py`. Validated by 62 in-tree tests + 2 anthropic smoke tests.
+**Exit criteria:** five LLMs round-robin through a discussion via `say`; alice's LLM autonomously calls `peers(action="find", capability="math")` → `delegate(target="bob", ...)` → returns `"204"` for `"12 × 17"` (anthropic smoke). Per-(session, expectation, violator) dedup, audit log, capability observation, and skill rendering all exercised by the listed test files. Validated by 62 in-tree tests + 2 anthropic smoke tests.
 
 **Reviewer notes for PR3:**
 - This is the heaviest PR. Reviewing by sub-area is encouraged: adapters → hub/expectations → hub/audit → client tools → tests.
@@ -131,7 +131,7 @@ Tests:
 
 **Validation command:**
 ```
-.venv-beta/bin/pytest test/beta/network/test_m3_*.py -v
+.venv-beta/bin/pytest test/beta/network/test_conversation.py test/beta/network/test_discussion.py test/beta/network/test_expectations.py test/beta/network/test_hydrate_scale.py test/beta/network/test_observation.py test/beta/network/test_tools.py -v
 .venv-beta/bin/pytest -m anthropic test/beta/providers/anthropic/test_network_smoke.py -v   # ~$0.005 against haiku
 ```
 
@@ -149,22 +149,22 @@ Network:
 - `autogen/beta/network/client/tools/handoff.py`
 
 Tests:
-- `test/beta/network/test_m4_workflow.py`
-- `test/beta/network/test_w1_fixes.py` (regression coverage from V1 audit wave 1)
-- `test/beta/network/test_w6_coverage.py` (regression coverage from V1 audit wave 6)
-- `test/beta/network/test_w7_fixes.py` (regression coverage from V1 audit wave 7)
+- `test/beta/network/test_workflow.py`
+- `test/beta/network/test_audit_and_lifecycle.py` (audit log + lifecycle invariants)
+- `test/beta/network/test_sweeper_and_registry.py` (background sweeper + registry isolation + cross-tool flow)
+- `test/beta/network/test_hub_invariants.py` (registration / concurrency / dispatch / projection invariants)
 - `test/beta/providers/anthropic/test_workflow_smoke.py`
 
-**Exit criteria:** triage's LLM calls `transfer_to_eng` → eng's notify handler engages eng's LLM with the synthesised handoff prompt → eng's reply rotates control back to triage via `FromSpeaker(eng) → RevertToInitiatorTarget` → workflow state survives a mid-flow `Hub.hydrate()` → triage closes the session. Validated by `test_m4_workflow.py` (26 tests) + `test_workflow_smoke.py` (1 anthropic test). Plus W1/W6/W7 regression test files (~1.7K LOC) lock in the audit-fix invariants for the entire V1 surface.
+**Exit criteria:** triage's LLM calls `transfer_to_eng` → eng's notify handler engages eng's LLM with the synthesised handoff prompt → eng's reply rotates control back to triage via `FromSpeaker(eng) → RevertToInitiatorTarget` → workflow state survives a mid-flow `Hub.hydrate()` → triage closes the session. Validated by `test_workflow.py` (26 tests) + `test_workflow_smoke.py` (1 anthropic test). Plus the audit / sweeper / hub-invariant regression files (~1.7K LOC) lock in invariants for the entire V1 surface.
 
 **Reviewer notes for PR4:**
 - `EV_HANDOFF` (`ag2.handoff`) was added to `envelope.py` and `client/handlers.py` in PR1/PR2's at-HEAD versions; PR4 adds the *callers* (transitions + workflow adapter + handoff tool).
 - `client/plugin.py::register_workflow(graph)` is the user-facing convenience that materialises one tool per `ToolCalled` transition. The plugin code shipped in PR2; PR4 activates it.
-- The W1/W6/W7 test files are post-hoc regression suites for V1 audit findings. They do not depend on M4 functionality specifically — they cover the full V1 surface — and land here because PR4 is the last in the stack.
+- `test_audit_and_lifecycle.py`, `test_sweeper_and_registry.py`, and `test_hub_invariants.py` are post-hoc regression suites covering the whole V1 surface, not the workflow code specifically. They land here because PR4 is the last in the stack.
 
 **Validation command:**
 ```
-.venv-beta/bin/pytest test/beta/network/test_m4_workflow.py test/beta/network/test_w*.py -v
+.venv-beta/bin/pytest test/beta/network/test_workflow.py test/beta/network/test_audit_and_lifecycle.py test/beta/network/test_sweeper_and_registry.py test/beta/network/test_hub_invariants.py -v
 .venv-beta/bin/pytest -m anthropic test/beta/providers/anthropic/test_workflow_smoke.py -v   # ~$0.005 against haiku
 ```
 

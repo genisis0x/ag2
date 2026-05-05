@@ -2,11 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Coverage gaps identified by the V1 audit.
+"""Sweeper background firing + registry isolation + cross-tool flow.
 
-* Real-clock expectation sweeper firing — earlier tests call
-  ``hub._expectation_tick()`` directly, which would mask a regression
-  in the background ``_IntervalSweeper`` event loop.
+* Real-clock expectation sweeper firing — separate from the unit
+  tests that call ``hub._expectation_tick()`` directly; this exercise
+  catches regressions in the background ``_IntervalSweeper`` event
+  loop.
 * TransitionRegistry isolation — custom targets registered on a fresh
   registry don't leak into the default singleton.
 * Cross-tool flow exercising the LLM-tool surface end-to-end without

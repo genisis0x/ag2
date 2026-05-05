@@ -44,8 +44,4 @@ class ProtocolError(NetworkError):
 
 
 class InboxFull(NetworkError):
-    """Recipient inbox is at capacity and overflow policy is ``reject``.
-
-    V1 ships ``reject`` only; ``drop_oldest`` and ``drop_newest`` arrive
-    in Phase 2.
-    """
+    """Recipient inbox is at capacity and overflow policy is ``reject``."""

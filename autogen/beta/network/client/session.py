@@ -7,10 +7,6 @@
 Wraps ``SessionMetadata`` plus a back-pointer to the ``AgentClient`` so
 tools / handlers can ``send`` envelopes, ``close`` early, or ``info``
 the current state without reaching back through the hub directly.
-
-M2 surface is intentionally thin — read access to metadata, send
-text/protocol envelopes, close, info. Subscription / iteration are
-M3.
 """
 
 from typing import TYPE_CHECKING, Any

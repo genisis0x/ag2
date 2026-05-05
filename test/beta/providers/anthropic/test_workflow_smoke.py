@@ -2,18 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""M4 smoke test — real-LLM verification of the workflow exit criterion.
+"""Workflow smoke test against a real LLM.
 
-From ``design/PLAN.md`` M4 exit:
+A 3-agent swarm runs end-to-end via tool-driven handoffs. Triage
+agent calls ``transfer_to_eng(reason)`` → eng agent replies →
+``RevertToInitiatorTarget`` brings control back to triage → triage
+closes via ``TerminateTarget``. Workflow state survives
+``Hub.hydrate()`` mid-flow.
 
-  A 3-agent swarm runs end-to-end via tool-driven handoffs. Triage agent
-  calls ``transfer_to_eng(reason)`` → eng agent replies →
-  ``RevertToInitiatorTarget`` brings control back to triage → triage
-  closes via ``TerminateTarget``. Workflow state survives ``Hub.hydrate()``
-  mid-flow.
-
-This test uses ``claude-haiku-4-5`` for cost; loads ``.env`` from the
-repo root; skips if ``ANTHROPIC_API_KEY`` is unset; marked
+Uses ``claude-haiku-4-5`` for cost; loads ``.env`` from the repo
+root; skips if ``ANTHROPIC_API_KEY`` is unset; marked
 ``@pytest.mark.anthropic`` so the default unit run skips it.
 """
 

@@ -2,28 +2,28 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Wave 7 fixes for V1 audit findings (post-M4 review).
+"""Hub correctness invariants — registration, concurrency, dispatch, projection.
 
-Covers nine bug fixes:
+Covers:
 
-* HIGH: ``Hub.unregister`` deletes on-disk identity files so
-  ``hydrate()`` does not re-load unregistered agents.
-* HIGH: Concurrency caps + inbox limits enforced
+* ``Hub.unregister`` deletes on-disk identity files so ``hydrate()``
+  does not re-load unregistered agents.
+* Concurrency caps + inbox limits enforced
   (``max_concurrent_sessions`` / ``max_concurrent_tasks`` /
   ``InboxBlock.max_pending``).
-* HIGH: ``delegate`` pre-creates the inbox before sending so a fast
-  reply cannot be dropped (race fix).
-* MED: ``Hub.register`` rejects a duplicate ``name`` so the prior
-  passport / resume / rule are not orphaned on disk.
-* MED: ``delegate`` fails fast on session close / reject / expiry
-  rather than blocking until the 300s default timeout.
-* MED: Expectation dedup keyed by ``(index, name, violator)`` so two
+* ``delegate`` pre-creates the inbox before sending so a fast reply
+  cannot be dropped (race fix).
+* ``Hub.register`` rejects a duplicate ``name`` so the prior passport
+  / resume / rule are not orphaned on disk.
+* ``delegate`` fails fast on session close / reject / expiry rather
+  than blocking until the 300s default timeout.
+* Expectation dedup keyed by ``(index, name, violator)`` so two
   same-named expectations don't suppress each other.
-* MED: ``record_observation`` is idempotent per ``task_id`` so
-  cascade-terminal events don't double-count ``Resume.observed.n``.
-* MED: ``set_resume`` re-indexes ``claimed_capabilities`` so newly
-  claimed caps surface under ``peers(action="find", capability=...)``.
-* MED: ``EV_HANDOFF`` envelopes are projected through ``FullTranscript``
+* ``record_observation`` is idempotent per ``task_id`` so cascade-
+  terminal events don't double-count ``Resume.observed.n``.
+* ``set_resume`` re-indexes ``claimed_capabilities`` so newly claimed
+  caps surface under ``peers(action="find", capability=...)``.
+* ``EV_HANDOFF`` envelopes are projected through ``FullTranscript``
   and ``WindowedSummary`` so multi-hop workflows preserve the thread.
 """
 

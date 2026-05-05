@@ -4,9 +4,8 @@
 
 """``DiscussionAdapter`` — multi-participant turn-taking session.
 
-V1 ships ``round_robin`` ordering only. ``dynamic`` and ``static``
-ordering modes are Phase 2 — the knob is rejected at create time when
-unsupported, so manifests on disk stay consistent with the adapter
+Ships ``round_robin`` ordering. Unsupported orderings are rejected at
+create time so manifests on disk stay consistent with the adapter
 that's actually loaded.
 
 Default expectations:
@@ -14,9 +13,6 @@ Default expectations:
   within 2 minutes of being expected.
 * ``turn_within(600s, hide)`` — silenced from the session if quiet for
   10 minutes.
-
-The expectation sweeper that enforces these lands in cut 3.3. M3
-declares the expectations on the manifest so they are durable on disk.
 """
 
 from dataclasses import dataclass, field
@@ -100,8 +96,8 @@ class DiscussionAdapter:
     first; turns rotate through ``metadata.participants`` in ``order``,
     cycling back after the last participant.
 
-    Knobs: ``{"ordering": "round_robin"}`` (default). ``dynamic`` and
-    ``static`` are Phase 2 and rejected at create time.
+    Knobs: ``{"ordering": "round_robin"}`` (default). Unsupported
+    orderings are rejected at create time.
 
     Default view: :class:`WindowedSummary(recent_n=N*2)` where N =
     participant count — keeps prompt size bounded at any turn count.
@@ -168,8 +164,8 @@ class DiscussionAdapter:
         ordering = metadata.knobs.get("ordering", _DEFAULT_ORDERING)
         if ordering not in _SUPPORTED_ORDERINGS:
             raise ProtocolError(
-                f"discussion knobs.ordering={ordering!r} not supported in V1; "
-                f"choose from {sorted(_SUPPORTED_ORDERINGS)} (dynamic / static are Phase 2)"
+                f"discussion knobs.ordering={ordering!r} not supported; "
+                f"choose from {sorted(_SUPPORTED_ORDERINGS)}"
             )
 
     def validate_send(

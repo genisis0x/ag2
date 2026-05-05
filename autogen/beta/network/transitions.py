@@ -2,17 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``Transition`` vocabulary for orchestrated workflows (M4).
+"""``Transition`` vocabulary for orchestrated workflows.
 
-See ``design/workflow.md``. The pieces:
+The pieces:
 
 * :class:`TransitionTarget` — Protocol; ``resolve(state, envelope) ->
-  TransitionDecision`` says where the next turn goes. V1 ships 5
-  concretes (``AgentTarget``, ``RoundRobinTarget``, ``StayTarget``,
-  ``RevertToInitiatorTarget``, ``TerminateTarget``).
+  TransitionDecision`` says where the next turn goes. Built-ins:
+  ``AgentTarget``, ``RoundRobinTarget``, ``StayTarget``,
+  ``RevertToInitiatorTarget``, ``TerminateTarget``.
 * :class:`TransitionCondition` — Protocol; ``evaluate(state, envelope)
-  -> bool`` says when a transition fires. V1 ships 3 concretes
-  (``Always``, ``FromSpeaker``, ``ToolCalled``).
+  -> bool`` says when a transition fires. Built-ins: ``Always``,
+  ``FromSpeaker``, ``ToolCalled``.
 * :class:`Transition` — pairs ``when`` + ``then`` with a ``priority``.
 * :class:`TransitionGraph` — ``initial_speaker`` + ordered list of
   ``Transition``s + ``default_target`` + optional ``max_turns``.
@@ -23,10 +23,10 @@ persists in ``SessionMetadata.knobs["graph"]`` and survives
 ``Hub.hydrate()``. Custom targets / conditions plug in by registering
 under a unique ``name``.
 
-The Protocol's ``resolve`` / ``evaluate`` deliberately take only
-``(state, envelope)`` — no metadata. ``WorkflowState`` carries
-``participant_order`` and ``creator_id`` so transitions can be
-evaluated inside ``WorkflowAdapter.fold``, which has no metadata.
+``resolve`` / ``evaluate`` deliberately take only ``(state, envelope)``
+— no metadata. ``WorkflowState`` carries ``participant_order`` and
+``creator_id`` so transitions can be evaluated inside
+``WorkflowAdapter.fold``, which has no metadata.
 """
 
 import json
@@ -238,8 +238,9 @@ _BUILTIN_CONDITIONS: tuple[type[TransitionCondition], ...] = (
 class TransitionRegistry:
     """Per-(process, instance) registry of transition target / condition classes.
 
-    Constructed pre-populated with V1 built-ins
-    (``AgentTarget`` / ``RoundRobinTarget`` / ... and
+    Constructed pre-populated with the built-ins
+    (``AgentTarget`` / ``RoundRobinTarget`` / ``StayTarget`` /
+    ``RevertToInitiatorTarget`` / ``TerminateTarget`` and
     ``Always`` / ``FromSpeaker`` / ``ToolCalled``).
 
     Tests / multi-tenant callers that need isolation construct their

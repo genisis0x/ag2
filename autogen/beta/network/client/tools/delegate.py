@@ -4,14 +4,13 @@
 
 """``delegate`` — one-shot consult: open consulting → ask → return reply.
 
-This is the most common multi-agent pattern in beta and gets its own
-flat tool (vs the grouped ``sessions(action="open") + tasks(...)``
-pattern). The flat surface keeps the LLM's tool list short — ``say``
-and ``delegate`` cover the hot path.
+This is the most common multi-agent pattern and gets its own flat tool
+(vs the grouped ``sessions(action="open") + tasks(...)`` pattern). The
+flat surface keeps the LLM's tool list short — ``say`` and
+``delegate`` cover the hot path.
 
-M2 ships ``blocking=True`` only — the ``blocking=False`` form returning
-a task handle arrives in M3. ``capability`` is recorded as a knob for
-the session and (in M3) feeds ``Resume.observed`` on terminal completion.
+``capability`` is recorded as a session knob and feeds the owner's
+``Resume.observed`` on terminal completion via the task mirror.
 """
 
 import asyncio
@@ -58,7 +57,8 @@ def make_delegate_tool(agent_client: "AgentClient") -> object:
         target: peer **name** (or agent_id) to consult.
         prompt: the question or request to send.
         capability: optional capability tag. Recorded as a session
-                    knob; M3 uses it for ``Resume.observed`` updates.
+                    knob; the task mirror uses it to update
+                    ``Resume.observed`` on terminal completion.
         timeout: max seconds to wait for the reply (default 300s).
 
         Returns the reply text on success, or an ``Error: ...`` string

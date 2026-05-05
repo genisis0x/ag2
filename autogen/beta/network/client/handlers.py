@@ -16,9 +16,7 @@ Routes inbound envelopes to the right action:
 
 The handler is decomposed into small public hooks
 (``read_wal_until``, ``resolve_view_policy``, ``stamp_dependencies``)
-so user-supplied ``@client.on(session_type)`` overrides can replace
-only what they care about — that registry is M3 work; M2 ships only
-the default flow.
+so user-supplied overrides can replace only the parts they care about.
 """
 
 from typing import TYPE_CHECKING
@@ -95,8 +93,9 @@ def stamp_dependencies(
 async def _auto_ack_invite(envelope: Envelope, client: "AgentClient") -> None:
     """Default behaviour: ack any invite addressed to us.
 
-    M2 always acks. Policy-based rejection (``EV_SESSION_INVITE_REJECT``
-    on access denial / capacity / similar) is M3.
+    Policy-based rejection (``EV_SESSION_INVITE_REJECT`` on access
+    denial / capacity) is the override path — replace this handler in a
+    custom callback wired via ``AgentClient.on_envelope``.
     """
     ack = Envelope(
         session_id=envelope.session_id,
@@ -204,9 +203,9 @@ async def _process_text(envelope: Envelope, client: "AgentClient") -> None:
 async def default_handler(envelope: Envelope, client: "AgentClient") -> None:
     """Route an inbound envelope to its handler.
 
-    Override per session type via ``@client.on("type")`` (M3) — the
-    default delegates to the per-event helpers above which can be
-    composed in custom handlers.
+    Override via :meth:`AgentClient.on_envelope` — the default
+    delegates to the per-event helpers above which can be composed in
+    custom handlers.
     """
     event_type = envelope.event_type
     if event_type == EV_SESSION_INVITE:

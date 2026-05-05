@@ -4,15 +4,11 @@
 
 """``TaskMirror`` — bridges agent ``Task*`` stream events to ``Hub.observe_task``.
 
-Per ``design/tasks.md``: the network is *one observer* of agent-owned
-tasks. The mirror subscribes to ``TaskStarted`` / ``TaskProgress`` /
-``TaskCompleted`` / ``TaskFailed`` / ``TaskExpired`` on the agent's
-stream and forwards corresponding ``TaskMetadata`` updates to the hub.
-
-M2 ships the mirror but exercise of it is sparse — the basic
-consulting flow (``delegate`` round-trip) does not directly use
-``Agent.task(...)``. M3 wires LLM-facing ``tasks(action="start")``
-which lights it up.
+The network is *one observer* of agent-owned tasks: tasks are created
+and driven by the agent itself, and the mirror simply subscribes to
+``TaskStarted`` / ``TaskProgress`` / ``TaskCompleted`` / ``TaskFailed``
+/ ``TaskExpired`` on the agent's stream and forwards the corresponding
+``TaskMetadata`` updates to the hub.
 """
 
 from datetime import datetime, timezone
@@ -49,14 +45,13 @@ class TaskMirror:
     ``agent_id``). Attach to a stream for the duration of a notify
     handler / Agent.ask call, then detach.
 
-    The mirror routes through a :class:`HubClient` so V1 (in-process)
-    and Phase 3 (cross-process WS) share the same call sites. Tests
-    that hold a bare ``Hub`` can still pass it directly via the legacy
-    ``hub=`` keyword for convenience.
+    The mirror routes through a :class:`HubClient` so the same call
+    sites work for both in-process and any future cross-process
+    transport. Tests that hold a bare ``Hub`` can still pass it
+    directly via the legacy ``hub=`` keyword for convenience.
 
     Failures forwarding to the hub are swallowed — the mirror must
-    never crash the agent's turn. Production builds should log; M2
-    keeps quiet.
+    never crash the agent's turn.
     """
 
     def __init__(
@@ -225,9 +220,8 @@ class TaskMirror:
         observation through so the owner's ``Resume.observed`` updates.
 
         ``capability`` and ``started_at`` come from the in-process hub
-        cache (``_tasks``); Phase 3 will move this lookup over the wire.
-        For V1, both ``hub_client._hub`` and the legacy ``hub`` arg
-        provide the same in-process view.
+        cache (``_tasks``); both ``hub_client._hub`` and the legacy
+        ``hub`` arg provide the same in-process view.
         """
         if outcome not in TERMINAL_TASK_STATES:
             return

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""M3 cut 3.2 — discussion adapter (round_robin) + multi-party handshake.
+"""Discussion adapter (round_robin) + multi-party handshake tests.
 
 Covers:
 
@@ -12,15 +12,13 @@ Covers:
   through ``metadata.participants`` ``order`` after each accepted
   ``EV_TEXT``.
 * ``validate_send`` rejects out-of-turn sends.
-* Partial reject fails the session (V1 is all-or-nothing; partial
-  quorum is Phase 2).
+* Partial reject fails the session (the handshake is all-or-nothing).
 * ``Hub.hydrate()`` re-folds the WAL through ``DiscussionAdapter.fold``
   and recovers ``expected_next_speaker``.
 * Hub auto-registers the adapter on ``Hub.open``.
 * ``validate_create`` rejects unsupported ordering modes.
 
-Real-LLM smoke tests live under ``smoke_tests/network/`` (Phase 4) —
-this suite uses ``ScriptedConfig`` so it runs offline and fast.
+This suite uses ``ScriptedConfig`` so it runs offline and fast.
 """
 
 from typing import Awaitable, Callable

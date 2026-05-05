@@ -4,8 +4,6 @@
 
 """Per-(hub, agent) rules — access + limits.
 
-V1 ships ``access`` + ``limits`` only; transforms (per-envelope local
-enforcement) ship in Phase 3 alongside the WebSocket transport.
 Defaults are permissive: a freshly registered Agent with no rule
 changes can talk to anyone, accept any session type, and has no rate
 limit. Apps tighten by passing a non-default ``Rule`` to
@@ -69,9 +67,10 @@ class AccessBlock:
 
 @dataclass(slots=True)
 class RateBlock:
-    """Token-bucket rate limiter (Phase 2). M1 stores the values but
-    does not enforce — ``per_minute = 0`` keeps the limiter disabled
-    by default, so the no-op behaviour matches the eventual default.
+    """Token-bucket rate limit values.
+
+    Stored on the rule but not enforced by the in-process hub —
+    ``per_minute = 0`` keeps the limiter disabled by default.
     """
 
     per_minute: int = 0
@@ -82,8 +81,9 @@ class RateBlock:
 class InboxBlock:
     """Inbox capacity policy.
 
-    M1 ships ``reject`` overflow only; ``drop_oldest`` and
-    ``drop_newest`` arrive in Phase 2.
+    Only ``reject`` is enforced today; ``drop_oldest`` / ``drop_newest``
+    are recognised but treated as ``reject`` until the dispatch path
+    grows the alternate behaviours.
     """
 
     max_pending: int = 1000
@@ -98,14 +98,8 @@ class LimitsBlock:
     :func:`parse_duration`; values may be passed pre-parsed as ``int``
     seconds.
 
-    V1 does not enforce per-tenant ``peer_heartbeat_timeout`` /
-    ``task_stall_threshold`` / ``session_idle_threshold``: peer
-    reachability needs the WebSocket transport (Phase 3); session
-    idle is covered by ``max_silence`` declared on a manifest's
-    ``expectations``; task stall surfacing is Phase 2 (per-task
-    ``last_progress_at`` cadence). The fields are intentionally
-    omitted from ``LimitsBlock`` so callers don't construct rules
-    that look enforced but aren't.
+    Idle-session detection rides on ``max_silence`` declared on a
+    manifest's ``expectations`` rather than a per-tenant timer here.
     """
 
     max_concurrent_sessions: int = 0

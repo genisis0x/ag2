@@ -4,15 +4,14 @@
 
 """Wire frames for the ``Link`` Protocol.
 
-V1 ships the subset of frames required by ``LocalLink`` plus
-``HelloFrame`` / ``WelcomeFrame`` so the same wire vocabulary works
-for ``WsLink`` (Phase 3) without renaming. Streaming ``ChunkFrame``
-and Phase-3 ``RuleChangedFrame`` are intentionally omitted.
+The vocabulary covers what ``LocalLink`` needs plus ``HelloFrame`` /
+``WelcomeFrame`` so the same shape works over a network transport
+without renaming.
 
 ``encode_frame`` / ``decode_frame`` produce JSON-compatible dicts.
 ``LocalLink`` passes Frame dataclasses through in-memory queues
 without serialisation; the encode/decode helpers exist so the same
-frame vocabulary serialises losslessly on ``WsLink``.
+frame vocabulary serialises losslessly over the wire.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -45,7 +44,7 @@ class HelloFrame:
 
     ``name`` lets the hub bind the connection to an existing identity
     (re-connect) or onboard a new one. ``auth_scheme`` + ``auth_claim``
-    feed the registered ``AuthAdapter``. V1 ships ``NoAuth`` only.
+    feed the registered ``AuthAdapter`` (defaults to ``NoAuth``).
     """
 
     kind: ClassVar[str] = "hello"
@@ -133,9 +132,10 @@ class NotifyFrame:
 class ReceiptFrame:
     """client → hub: ack or nack a ``notify``.
 
-    ``status`` is ``"ack"`` (advances ``inbox.cursor`` in Phase 3) or
-    ``"nack"`` (records to ``inbox_nacks.jsonl``). ``reason`` is a
-    free-form diagnostic for the audit log.
+    ``status`` is ``"ack"`` (advances the cross-process ``inbox.cursor``
+    when the transport supports replay) or ``"nack"`` (records to
+    ``inbox_nacks.jsonl``). ``reason`` is a free-form diagnostic for
+    the audit log.
     """
 
     kind: ClassVar[str] = "receipt"
@@ -149,8 +149,9 @@ class SubscribeFrame:
     """client → hub: open a push subscription on a session or task.
 
     At least one of ``session_id`` / ``task_id`` must be set.
-    ``since_envelope_id`` is the cursor for at-least-once replay
-    (Phase 3 — V1 in-process is exactly-once by lock).
+    ``since_envelope_id`` is the cursor for at-least-once replay over
+    a reconnecting transport; in-process delivery is exactly-once by
+    per-session lock.
     """
 
     kind: ClassVar[str] = "subscribe"

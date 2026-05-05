@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Workflow handoff tools (M4).
+"""Workflow handoff tools.
 
 Each :class:`ToolCalled` transition in a workflow's :class:`TransitionGraph`
 becomes one LLM tool. When the LLM invokes the tool, it posts an

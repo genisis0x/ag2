@@ -49,10 +49,10 @@ class TestConversationPolicy:
         assert summary in filtered
 
 
-# NOTE: TestNetworkPolicy (V2 NetworkPolicy + FormattedEvent wrapping of
-# DelegationResult / SchedulerTriggerFired / TopicMessage) was removed with
-# the V2 rewrite. V3 will reintroduce equivalent assembly glue in Phase 2 /
-# Phase 4 when network Tasks and the multi-participant session types land.
+# NOTE: TestNetworkPolicy (the prior NetworkPolicy + FormattedEvent
+# wrapping of DelegationResult / SchedulerTriggerFired / TopicMessage)
+# was removed in the rewrite. Equivalent assembly glue will return
+# alongside multi-participant session types when needed.
 
 
 class TestSlidingWindowPolicy:

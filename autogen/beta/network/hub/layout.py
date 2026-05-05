@@ -4,11 +4,10 @@
 
 """Filesystem path helpers for the hub's ``KnowledgeStore`` layout.
 
-Path conventions match ``design/persistence.md``. All paths are Unix-
-style with a leading ``/`` (the ``KnowledgeStore`` Protocol normalises
-internally). Centralising path construction here means changes to the
-on-disk layout (chunked WALs, namespace migration) only touch this
-module.
+All paths are Unix-style with a leading ``/`` (the ``KnowledgeStore``
+Protocol normalises internally). Centralising path construction here
+means changes to the on-disk layout (chunked WALs, namespace
+migration) only touch this module.
 """
 
 __all__ = (
@@ -127,10 +126,5 @@ def task_events_path(task_id: str) -> str:
 
 
 def audit_path() -> str:
-    """Single append-only audit log.
-
-    V1 writes every audit record to one file indefinitely (per
-    ``design/PLAN.md`` non-goals: rotation deferred to Phase 2). The
-    Phase 2 daily-rotated variant will accept a date parameter.
-    """
+    """Single append-only audit log."""
     return "/audit/audit.jsonl"

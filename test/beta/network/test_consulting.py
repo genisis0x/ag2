@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""M2 — consulting integration tests.
+"""Consulting adapter integration tests.
 
-Covers the M2 exit criterion from ``design/PLAN.md``:
+Covers:
 
 * Single-recipient consulting handshake (invite → auto-ack → ACTIVE).
 * Full LLM-driven turn: initiator sends prompt → respondent's notify
@@ -16,8 +16,7 @@ Covers the M2 exit criterion from ``design/PLAN.md``:
   through ``adapter.fold`` so the in-memory ``AdapterState`` matches
   what's on disk.
 
-Real-LLM smoke tests live under ``smoke_tests/network/`` (Phase 4) —
-this suite uses ``TestConfig`` so it runs offline and fast.
+This suite uses ``TestConfig`` so it runs offline and fast.
 """
 
 import asyncio
@@ -281,7 +280,7 @@ async def test_default_consulting_adapter_registered_on_open() -> None:
 
 @pytest.mark.asyncio
 async def test_delegate_tool_end_to_end() -> None:
-    """M2 exit criterion: Alice's LLM uses ``delegate`` to consult Bob.
+    """End-to-end: Alice's LLM uses ``delegate`` to consult Bob.
 
     Alice's TestConfig delivers a ``delegate`` tool call followed by a
     final user-facing response. Bob's TestConfig delivers a single

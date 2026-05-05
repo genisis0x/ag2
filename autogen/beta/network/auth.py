@@ -4,10 +4,9 @@
 
 """Authentication adapters.
 
-V1 ships ``NoAuth`` only — every claim is accepted. ``ApiKeyAuth``
-lands in Phase 3 alongside the WebSocket transport. The ``AuthAdapter``
-Protocol stays open so further schemes ship additively (JWT, mTLS, and
-signed-challenge are AG2 Cloud features).
+Ships ``NoAuth`` only — every claim is accepted. The ``AuthAdapter``
+Protocol stays open so callers can plug in alternate schemes (API key,
+JWT, mTLS, signed-challenge) by passing a custom ``AuthRegistry``.
 """
 
 from typing import Any, ClassVar, Protocol
@@ -33,7 +32,7 @@ class AuthAdapter(Protocol):
 
 
 class NoAuth:
-    """No-op adapter — accepts every claim. V1 default."""
+    """No-op adapter — accepts every claim. Default registry entry."""
 
     scheme = "none"
 
@@ -44,9 +43,9 @@ class NoAuth:
 class AuthRegistry:
     """Registry mapping ``scheme`` strings to ``AuthAdapter`` impls.
 
-    Apps wanting ``ApiKeyAuth`` (Phase 3) construct their own
-    ``AuthRegistry([NoAuth(), ApiKeyAuth()])`` and pass it to
-    ``Hub(... auth=...)``. Use :meth:`default` for the V1 ``NoAuth``-only
+    Apps wanting a custom adapter construct their own
+    ``AuthRegistry([NoAuth(), MyAuth()])`` and pass it to
+    ``Hub(... auth=...)``. Use :meth:`default` for the ``NoAuth``-only
     default.
     """
 

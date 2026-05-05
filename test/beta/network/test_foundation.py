@@ -2,14 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""M1 foundation integration tests.
+"""Foundation integration tests.
 
-Covers the M1 exit criterion from ``design/PLAN.md``: two
-``AgentClient``s register through ``LocalLink`` and exchange raw
+Two ``AgentClient``s register through ``LocalLink`` and exchange raw
 envelopes; ``Hub.hydrate()`` rebuilds passport/resume/rule caches from
-disk.
-
-No sessions, no LLM, no expectation sweeper — those land in M2/M3.
+disk. No sessions, no LLM, no expectation sweeper — those are
+exercised in the higher-level adapter tests.
 """
 
 import asyncio
@@ -39,8 +37,8 @@ def _agent(name: str) -> Agent:
     return Agent(name=name, config=AnthropicConfig(model="claude-sonnet-4-6"))
 
 
-# Session-based envelope round-trip lives in test_m2_consulting.py — by M2
-# all envelope dispatch goes through a real session adapter.
+# Session-based envelope round-trip lives in test_consulting.py — once
+# adapters are wired all envelope dispatch goes through a real session.
 
 
 @pytest.mark.asyncio

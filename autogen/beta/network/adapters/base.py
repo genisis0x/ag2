@@ -4,7 +4,7 @@
 
 """``SessionAdapter`` Protocol + ``AdapterState`` marker + ``AdapterResult``.
 
-See ``design/sessions.md`` for the full contract. Key invariants:
+Key invariants:
 
 * Adapters are stateless and pure.
 * Every decision derives from ``(metadata, AdapterState)``.

@@ -4,15 +4,10 @@
 
 """``NetworkClient`` Protocol — abstract participant in a network.
 
-V1 ships ``AgentClient`` as the only implementation (backed by an
-``Agent``). Future ``HumanClient`` (queue + UI bridge) and
-``AdminClient`` (operational tools, no LLM) plug into the same Protocol
-without inheriting from ``AgentClient`` — implementing the four members
-below is enough.
-
-Session opening is M2: ``Session`` doesn't exist in the framework yet,
-so ``open()`` is intentionally absent from the M1 Protocol surface and
-will be added when the session adapter machinery lands.
+``AgentClient`` is the built-in implementation (backed by an ``Agent``).
+Other participant kinds (e.g. a queue + UI bridge, or operational tools
+with no LLM) plug into the same Protocol without inheriting from
+``AgentClient`` — implementing the four members below is enough.
 """
 
 from typing import Protocol
@@ -26,10 +21,11 @@ __all__ = ("NetworkClient",)
 class NetworkClient(Protocol):
     """A participant in a network.
 
-    ``AgentClient`` is the V1 implementation backed by an ``Agent``.
-    Future ``HumanClient`` / ``AdminClient`` implement the same
-    Protocol. M2 will add ``open(...)`` for session creation; M1 keeps
-    the surface to identity + receive + disconnect.
+    The Protocol surface covers identity, inbound delivery, and
+    disconnect. Session-opening lives on ``AgentClient`` rather than
+    the Protocol so non-agent participants (UI bridges, admin tools)
+    can refuse to initiate sessions if that doesn't make sense for
+    them.
     """
 
     @property

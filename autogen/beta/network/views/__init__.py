@@ -5,12 +5,12 @@
 """View policies — per-participant projection from WAL to ModelEvents.
 
 A participant's effective LLM context for a turn is
-``[layer_C_summary, *layer_B_projection, current_envelope]`` (see
-``design/views.md``). Layer B is what view policies produce.
+``[layer_C_summary, *layer_B_projection, current_envelope]``. Layer B
+is what view policies produce.
 
-V1 ships ``FullTranscript`` only in M2; ``WindowedSummary`` lands in
-M3 (composes with framework-core ``compact.py``); ``Composite`` is
-Phase 2.
+Built-ins: ``FullTranscript`` (verbatim) and ``WindowedSummary``
+(bounded tail + head summary, composes with framework-core
+``compact.py``).
 """
 
 from .base import ViewPolicy

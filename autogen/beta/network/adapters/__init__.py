@@ -10,9 +10,9 @@ from the WAL. The hub caches the latest state per session in memory
 and reconstructs it from disk on ``hydrate()`` by re-folding —
 ``validate_send`` and ``on_accepted`` are O(1), not O(WAL).
 
-M2 shipped ``ConsultingAdapter``. M3 adds ``ConversationAdapter``
-(cut 3.1) and ``DiscussionAdapter`` (cut 3.2). ``WorkflowAdapter``
-arrives in M4 (see ``design/workflow.md``).
+Built-ins: ``ConsultingAdapter`` (1Q1R), ``ConversationAdapter`` (1+1
+bidirectional), ``DiscussionAdapter`` (multi-party round-robin), and
+``WorkflowAdapter`` (transition-graph orchestration).
 """
 
 from .base import AdapterResult, AdapterState, SessionAdapter

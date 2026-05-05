@@ -2,11 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Transport layer — frames + Link Protocol + ``LocalLink`` (V1).
+"""Transport layer — frames + Link Protocol + ``LocalLink``.
 
-V1 ships only ``LocalLink`` (in-memory duplex). Phase 3 adds ``WsLink``
-(WebSocket) on the same ``Link`` Protocol surface; nothing above this
-layer changes when transports are swapped.
+Ships ``LocalLink`` (in-memory duplex). The ``Link`` Protocol surface
+lets cross-process transports plug in without affecting layers above.
 """
 
 from .frames import (

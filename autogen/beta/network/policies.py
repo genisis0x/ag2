@@ -4,14 +4,13 @@
 
 """Qualified-key constants for ``ConversationContext.dependencies`` injection.
 
-Network plugin tools (M2/M3) resolve their bindings via these keys —
-mirroring how framework-core's ``TaskInject`` resolves to ``ag2.task``.
+Network plugin tools resolve their bindings via these keys — mirroring
+how framework-core's ``TaskInject`` resolves to ``ag2.task``.
 Centralising the keys here prevents drift between the side that stamps
 into ``context.dependencies`` and the side that injects them.
 
 The ``ag2.network.*`` namespace is reserved for network-only injects;
-``ag2.task`` re-exported here intentionally so consumers see one
-canonical key list.
+``ag2.task`` is re-exported here so consumers see one canonical key list.
 """
 
 __all__ = (

@@ -4,13 +4,14 @@
 
 """LLM-facing tools attached by ``NetworkPlugin``.
 
-V1 surface (M2 + M3): 2 flat + 4 grouped tools.
+Two flat tools cover the hot path; four grouped action-dispatch tools
+cover discovery and lifecycle:
 
-Flat (hot path):
+Flat:
 * ``say`` — post into a session.
 * ``delegate`` — one-shot consult.
 
-Grouped (action-dispatch):
+Grouped:
 * ``peers``    — find / describe peers.
 * ``sessions`` — list / open / info / close.
 * ``tasks``    — progress / complete (active) + list / status / wait.

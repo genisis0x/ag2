@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""M3 cut 3.3 — expectation evaluators, violation handlers, audit log.
+"""Expectation evaluators, violation handlers, and audit log tests.
 
 Three layers covered:
 

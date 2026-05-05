@@ -26,10 +26,9 @@ This module ships:
   passport + resume when no ``SKILL.md`` is registered, so the LLM
   always has a uniform read.
 
-V1 only parses scalar ``key: value`` lines (no nested mappings, lists,
-or block scalars). This matches what Anthropic's skill harness
-recognises and keeps the parser dependency-free. Real YAML can land in
-Phase 2 if needed (``pyyaml`` is already in dev deps).
+Only parses scalar ``key: value`` lines (no nested mappings, lists, or
+block scalars). This matches what Anthropic's skill harness recognises
+and keeps the parser dependency-free.
 """
 
 from typing import Any

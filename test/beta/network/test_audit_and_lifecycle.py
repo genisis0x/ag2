@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Wave 1 fixes for V1 audit findings.
+"""Audit log + lifecycle invariants.
 
 Covers:
 

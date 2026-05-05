@@ -4,7 +4,7 @@
 
 """``AgentClient`` — per-registration tenant handle.
 
-M2 surface:
+Surface:
 
 * Properties (agent, passport, resume, agent_id).
 * ``receive`` (NetworkClient impl) — routes envelopes to the optional
@@ -18,7 +18,7 @@ M2 surface:
   session matches a predicate; used by ``delegate`` to await replies.
 * Tenant-driven mutation (``set_resume`` / ``set_skill`` / ``set_rule``).
 * ``on_envelope(callback)`` — override the default notify handler
-  (testing seam; M3 replaces with the per-session-type registry).
+  (testing seam).
 
 The ``NetworkPlugin`` is attached at registration by ``HubClient`` so
 ``agent.tools`` includes ``say`` / ``delegate`` and the assembly chain
@@ -127,7 +127,6 @@ class AgentClient:
     def on_envelope(self, callback: EnvelopeHandler) -> None:
         """Override the default notify handler with a custom callback.
 
-        M3 replaces this with the ``@client.on(session_type)`` registry.
         Calling with the default handler restores it: pass
         ``self._run_default_handler`` (or simply construct without
         ``attach_default_handler=False``).
@@ -179,8 +178,8 @@ class AgentClient:
         """Open a session via the hub and return its :class:`Session` handle.
 
         ``target`` accepts peer **names** or agent_ids; resolution goes
-        through the bound :class:`HubClient` so V1 (in-process) and
-        Phase 3 (cross-process WS) take the same code path.
+        through the bound :class:`HubClient` so in-process and any
+        future cross-process transport take the same code path.
         """
         if self._disconnected:
             raise RuntimeError("AgentClient is disconnected")
@@ -242,7 +241,7 @@ class AgentClient:
         Used by ``delegate`` to await the consulting respondent's
         reply. The inbox is created on demand and shared across waits;
         callers should not hold multiple concurrent waits on the same
-        session in M2.
+        session.
 
         Raises ``asyncio.TimeoutError`` on timeout.
         """

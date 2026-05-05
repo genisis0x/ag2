@@ -16,7 +16,7 @@ Discovery / observation:
 * ``list``     — tasks the agent owns or is waiting on.
 * ``status``   — refresh ``TaskMetadata`` for a task by id.
 * ``wait``     — block until a peer's task reaches a terminal state.
-* ``cancel``   — Phase 2 (returns a placeholder error in V1).
+* ``cancel``   — not implemented; returns an error placeholder.
 
 ``start`` is intentionally **not** a tool — calling it from the LLM
 would bypass the ``async with`` lifecycle that scopes
@@ -86,7 +86,7 @@ def make_tasks_tool(agent_client: "AgentClient") -> object:
             ``list``    args scope="own"|"all", state="active"|"all", limit
             ``status``  args task_id
             ``wait``    args task_id, timeout=300, poll_interval=0.1
-            ``cancel``  Phase 2 — returns an error placeholder in V1
+            ``cancel``  not implemented — returns an error placeholder
         """
         actual = client if client is not None else agent_client
         hub = actual._hub_client
@@ -147,7 +147,7 @@ def make_tasks_tool(agent_client: "AgentClient") -> object:
             return f"Error: task {task_id!r} did not complete within {timeout}s"
 
         if action == "cancel":
-            return "Error: tasks(action='cancel') is Phase 2"
+            return "Error: tasks(action='cancel') is not implemented"
 
         return (
             f"Error: unknown action {action!r}; choose from progress, complete, "

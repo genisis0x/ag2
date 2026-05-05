@@ -4,16 +4,10 @@
 
 """autogen.beta.network — agent registry, durable messaging, and protocol-driven sessions.
 
-V1 ships in four internal milestones (see ``design/PLAN.md``):
-
-* M1 — Foundation: identity, envelope, rule, auth, transport, hub plumbing
-* M2 — Consulting loop: first end-to-end LLM-driven session adapter + tools
-* M3 — Multi-party + observability: discussion adapter, expectations, full tool surface
-* M4 — Workflow orchestration: ``Transition`` graphs, handoff tools
-
-Importing ``autogen.beta.network`` is opt-in — bare ``Agent`` continues
-to work standalone with no behavioural change when this package is not
-imported.
+The package layers a hub, transport, session adapters, and an LLM-facing
+plugin on top of ``autogen.beta.Agent``. Importing it is opt-in — bare
+``Agent`` continues to work standalone with no behavioural change when
+this package is not imported.
 """
 
 from .adapters import (

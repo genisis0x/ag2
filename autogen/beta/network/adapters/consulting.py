@@ -13,9 +13,6 @@ Default expectations:
 * ``reply_within(600s, auto_close)`` — respondent must reply within
   10 minutes of the initiator's send
 
-The expectation sweeper that enforces these lands in M3. M2 declares
-the expectations on the manifest so they are durable on disk.
-
 Task envelopes (``ag2.task.*``) bypass the 1Q1R contract: an LLM
 running as the respondent can emit progress / result envelopes
 mid-reply without the consulting adapter auto-closing on the first
@@ -181,7 +178,7 @@ class ConsultingAdapter:
             return
         if envelope.event_type != EV_TEXT:
             # Unknown event types are accepted as informational data on the
-            # session. Adapters may tighten this in M3 if needed.
+            # session.
             return
         if state.initiator_sent and state.respondent_replied:
             raise ProtocolError(
@@ -211,10 +208,10 @@ class ConsultingAdapter:
         if envelope.event_type != EV_TEXT:
             return AdapterResult()
         if state.initiator_sent and state.respondent_replied:
-            # Direct to CLOSED — M2 has no async cleanup phase between
-            # CLOSING and CLOSED. The transitional ``CLOSING`` state
-            # is reserved for future adapters that need a quiescence
-            # window (e.g., draining streamed chunks before close).
+            # Direct to CLOSED — consulting has no async cleanup phase.
+            # The transitional ``CLOSING`` state is reserved for adapters
+            # that need a quiescence window (e.g., draining streamed
+            # chunks before close).
             return AdapterResult(
                 next_state=SessionState.CLOSED,
                 auto_close_reason="consulting_complete",

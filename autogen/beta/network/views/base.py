@@ -10,8 +10,7 @@ inbound envelopes, ``ModelMessage`` for the participant's own past
 turns) in chronological order. The current turn's ``ModelRequest`` is
 appended by the caller.
 
-V1 ships ``FullTranscript`` (M2) and ``WindowedSummary`` (M3) as
-built-ins.
+Built-ins: :class:`FullTranscript` and :class:`WindowedSummary`.
 """
 
 from typing import Protocol

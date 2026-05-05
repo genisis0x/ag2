@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Append-only audit log writer (M3).
+"""Append-only audit log writer.
 
-V1 writes to a single ``audit.jsonl`` indefinitely under the hub's
-``KnowledgeStore`` root. Daily rotation is Phase 2.
+Writes to a single ``audit.jsonl`` under the hub's ``KnowledgeStore``
+root.
 
 The audit log records hub-cross-cutting events that are not visible
 on per-session WALs:

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""M3 cut 3.5 — 4 grouped LLM tools (peers, sessions, tasks, context).
+"""Grouped LLM tool tests (peers, sessions, tasks, context).
 
 Tools are tested by direct ``FunctionTool.__call__`` invocation with a
 synthesised ``ToolCallEvent`` and a ``Context`` carrying the same
@@ -406,7 +406,7 @@ async def test_tasks_status_unknown_task_returns_error() -> None:
 
 @pytest.mark.asyncio
 async def test_network_plugin_attaches_all_6_tools() -> None:
-    """Verifies the plugin wires every M3 tool onto ``agent.tools``."""
+    """Verifies the plugin wires every network tool onto ``agent.tools``."""
     store = MemoryKnowledgeStore()
     hub = await Hub.open(store, ttl_sweep_interval=0, expectation_sweep_interval=0)
     link = LocalLink(hub)

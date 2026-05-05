@@ -4,12 +4,11 @@
 
 """``NetworkPlugin`` — attaches the network tool surface to an ``Agent``.
 
-M2 surface:
-* Adds the ``say`` and ``delegate`` tools to ``agent.tools``.
+* Adds the network tools (``say``, ``delegate``, ``peers``,
+  ``sessions``, ``tasks``, ``context``) to ``agent.tools``.
 * Appends ``NetworkContextPolicy`` to the agent's assembly chain so
   every LLM call sees a "you are <name>" prefix plus the available
-  tool names. M3 enriches the prefix with peer list, active session
-  expectations, and active task metadata.
+  tool names.
 
 Plugins are first-class in beta (``autogen/beta/agent.py`` ``Plugin``
 class). The network plugin uses the existing slot.
@@ -44,9 +43,7 @@ __all__ = ("NetworkContextPolicy", "NetworkPlugin")
 class NetworkContextPolicy:
     """Assembly policy: prepends a network-aware prefix to every LLM call.
 
-    M2 minimal version — names the agent and lists its network tools.
-    M3 expands to peer list (with TTL-cached ``describe_network``),
-    active session expectations, and active task metadata.
+    Names the agent and lists its network tools.
     """
 
     name = "network_context"
@@ -119,8 +116,7 @@ class NetworkPlugin(Plugin):
         session B. B's graph almost certainly has no
         ``ToolCalled("foo")`` transition, so it falls through to B's
         ``default_target`` — which is commonly ``TerminateTarget``,
-        prematurely closing B. Mitigations until per-session tool
-        scoping ships (Phase 2):
+        prematurely closing B. Mitigations:
 
         * Use distinct, namespaced tool names across workflows
           (e.g. ``triage_to_eng`` vs ``billing_to_eng``).

@@ -13,7 +13,7 @@ test harness) can follow along without participating in execution.
 Tasks are agent-owned. The framework does not assign or schedule them.
 Standalone usage requires no hub or network — events fly past harmlessly
 if no observer subscribes. Network observation is layered on top via
-``autogen.beta.network`` (see ``design/tasks.md``).
+``autogen.beta.network``.
 """
 
 from dataclasses import dataclass, field

@@ -2,23 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""M3 polish — ``Hub.hydrate()`` correctness at scale.
+"""``Hub.hydrate()`` correctness at scale.
 
-Per ``design/PLAN.md`` M3 exit: ``Hub.hydrate()`` correctness test at
-scale (100 active sessions × 1000 envelopes). This verifies:
+Verifies:
 
 * All session metadata round-trips through ``DiskKnowledgeStore``.
 * Every active session's WAL is re-folded through its adapter so the
   in-memory ``_adapter_states`` cache matches the on-disk truth.
-* The capability index rebuilds from loaded resumes (cut 3.4 contract).
+* The capability index rebuilds from loaded resumes.
 * Round-trip is deterministic: hydrating twice yields the same state.
 
-This is a correctness benchmark, not a perf benchmark — Phase 2 owns
-the perf-regression suite. We use modest numbers (10 conversation
-sessions × 100 envelopes) so the test runs in <2s; the larger
-100×1000 sweep is doable but blocks the unit-run path. Set the
-``SCALE`` constant if you want to validate the full PLAN.md spec
-locally.
+Correctness benchmark, not a perf benchmark. Default: 100 sessions ×
+100 envelopes (~10k total) so the test runs in <2s. Bump
+``ENVELOPES_PER_SESSION`` locally to exercise larger sweeps.
 """
 
 import asyncio
@@ -49,10 +45,10 @@ from autogen.beta.network.session import SessionState
 from autogen.beta.testing import TestConfig
 
 # Scale chosen for unit-run speed: 100 sessions × 100 envelopes ≈
-# 10k envelopes, ~1s populate, instant hydrate. The PLAN.md spec is
-# 100 × 1000 (100k envelopes); bump ``ENVELOPES_PER_SESSION`` locally
-# to validate. Hydrate cost scales linearly with envelope count and
-# is dwarfed by populate (write throughput) in any realistic setup.
+# 10k envelopes, ~1s populate, instant hydrate. Bump
+# ``ENVELOPES_PER_SESSION`` locally for larger sweeps. Hydrate cost
+# scales linearly with envelope count and is dwarfed by populate
+# (write throughput) in any realistic setup.
 SESSIONS = 100
 ENVELOPES_PER_SESSION = 100
 

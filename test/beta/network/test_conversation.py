@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""M3 cut 3.1 — conversation adapter + windowed summary.
+"""Conversation adapter + windowed summary view tests.
 
-Covers the cut 3.1 deliverables:
+Covers:
 
 * ``ConversationAdapter`` 1+1 bidirectional handshake.
 * Multi-turn LLM-driven back-and-forth (no auto-close).
@@ -14,8 +14,7 @@ Covers the cut 3.1 deliverables:
 * ``WindowedSummary`` view: short history passes through; long history
   prepends a ``CompactionSummary``; respects ``audience`` visibility.
 
-Real-LLM smoke tests live under ``smoke_tests/network/`` (Phase 4) —
-this suite uses ``TestConfig`` so it runs offline and fast.
+This suite uses ``TestConfig`` so it runs offline and fast.
 """
 
 import asyncio

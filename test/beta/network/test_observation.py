@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""M3 cut 3.4 — resume observation, capability index, skill render, mutation.
+"""Resume observation, capability index, skill render, mutation tests.
 
 Three layers covered:
 
@@ -395,11 +395,9 @@ async def test_task_mirror_records_observation_on_capability_tagged_task() -> No
     """Running ``agent.task(capability=X)`` to completion through a mirror
     auto-calls ``Hub.record_observation`` and updates ``Resume.observed[X]``.
 
-    The full notify-handler integration (mirror attached automatically by
-    the default handler when the LLM calls a ``tasks(action="start")``
-    tool) lands in cut 3.5; this test exercises the mirror plumbing
-    directly so the cut 3.4 contract is verified without depending on
-    the tool surface.
+    Exercises the mirror plumbing directly (without the LLM tool
+    surface) so this contract is verified independently of the
+    end-to-end notify-handler integration covered in test_tools.py.
     """
     from autogen.beta import Context
     from autogen.beta.network.task_mirror import TaskMirror

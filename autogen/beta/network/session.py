@@ -4,7 +4,7 @@
 
 """Session data layer — manifests, metadata, expectations.
 
-V1 splits the session description in two:
+The session description splits in two:
 
 * :class:`SessionManifest` — *data*. Persisted with metadata. Describes
   what the session is.
@@ -15,9 +15,8 @@ Manifests are snapshotted into ``SessionMetadata.manifest`` at create
 time. Re-registering an adapter at a new version does **not** mutate
 in-flight sessions.
 
-The ``allowed_events`` field present in the original design is
-intentionally omitted — it was never validated. Adapters control what
-event types they accept via ``validate_send``.
+Adapters control which event types they accept via ``validate_send``;
+there is no hub-level allow-list.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -63,8 +62,8 @@ def is_terminal_session_state(state: SessionState) -> bool:
 class ParticipantRole(str, Enum):
     """Role of a participant within a session.
 
-    M2 only uses ``INITIATOR`` and ``RESPONDENT`` (consulting is 1+1).
-    ``PARTICIPANT`` lands with discussion/conversation in M3.
+    Consulting uses ``INITIATOR`` + ``RESPONDENT`` (2-party). Discussion
+    and conversation use ``INITIATOR`` + ``PARTICIPANT`` (multi-party).
     """
 
     INITIATOR = "initiator"
@@ -85,11 +84,10 @@ class ParticipantSchema:
 class Expectation:
     """A protocol-shape contract the hub evaluates over WAL + clock.
 
-    ``name`` selects a built-in evaluator. M2 ships the data contract
-    only; the evaluator+sweeper land in M3 along with the violation
-    handlers (``audit``, ``notify_session``, ``auto_close``).
-    Expectation kinds beyond ``acks_within`` / ``reply_within`` /
-    ``max_silence`` are Phase 2.
+    ``name`` selects a built-in evaluator (``acks_within``,
+    ``reply_within``, ``max_silence``). Violations are dispatched to one
+    of the built-in handlers (``audit``, ``notify_session``,
+    ``auto_close``).
     """
 
     name: str
@@ -166,9 +164,9 @@ class SessionMetadata:
 
     ``pending_acks`` and ``rejected_by`` are populated at session
     creation and frozen once the session transitions to ``ACTIVE``
-    (quorum reached) or fails creation. M2 uses the single-recipient
-    consulting handshake; full multi-party N-of-M quorum lands in M3
-    (currently we only support all-or-nothing accept).
+    (quorum reached) or fails creation. The handshake is all-or-nothing
+    for both 2-party (consulting) and multi-party (discussion,
+    conversation, workflow) sessions: any reject fails creation.
     """
 
     session_id: str

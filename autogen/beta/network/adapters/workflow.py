@@ -5,11 +5,10 @@
 """``WorkflowAdapter`` — orchestrated multi-party session driven by a
 declarative :class:`TransitionGraph`.
 
-See ``design/workflow.md``. The mechanic reuses what
-``DiscussionAdapter(round_robin)`` already does — folded
-``expected_next_speaker`` gates ``validate_send`` — and adds a richer
-rule for *how* ``expected_next_speaker`` advances. **No hub changes
-required.**
+The mechanic reuses what ``DiscussionAdapter(round_robin)`` already
+does — folded ``expected_next_speaker`` gates ``validate_send`` — and
+adds a richer rule for *how* ``expected_next_speaker`` advances. **No
+hub changes required.**
 
 knobs:
     graph: dict (TransitionGraph.to_dict() output) — required.
@@ -19,16 +18,13 @@ snapshotted into ``WorkflowState`` at ``initial_state`` so ``fold``
 (which has no metadata) can compute the next speaker on each accepted
 envelope.
 
-Default expectations (declared on the manifest; enforced by the M3
-expectation sweeper):
+Default expectations declared on the manifest:
 * ``turn_within(120s, warn)``
 * ``turn_within(600s, auto_close)`` — long stalls fail-fast.
 
-(Note: ``turn_within`` evaluator is Phase 2 per ``design/PLAN.md``;
-the manifest declaration is forward-looking. M3 ships ``acks_within``
-/ ``reply_within`` / ``max_silence`` which apply at the session level
-regardless of adapter — workflow sessions inherit them through the
-sweeper just like discussion sessions do.)
+The session-level ``acks_within`` / ``reply_within`` / ``max_silence``
+expectations apply regardless of adapter — workflow sessions inherit
+them through the expectation sweeper.
 """
 
 from dataclasses import dataclass, field

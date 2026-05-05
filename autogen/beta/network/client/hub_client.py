@@ -4,15 +4,14 @@
 
 """``HubClient`` — one connection to one hub per process.
 
-M1 surface: lazy-connects the underlying ``LinkClient`` on first
-``register``; demultiplexes inbound frames (only ``NotifyFrame`` in M1)
-to the appropriate ``AgentClient``; provides discovery passthroughs.
+Lazy-connects the underlying ``LinkClient`` on first ``register``;
+demultiplexes inbound ``NotifyFrame``s to the appropriate
+``AgentClient``; provides discovery passthroughs.
 
-In V1 (LocalLink only) the ``HubClient`` is constructed with both the
-``link`` and a direct ``hub`` reference — frames carry the wire
-contract but discovery / register paths cut through to the hub
-in-process. Phase 3 adds ``WsLink`` + HTTP discovery, where ``hub`` is
-``None`` and every operation goes through frames.
+With ``LocalLink``, the ``HubClient`` holds an explicit in-process
+``hub`` reference so register / discovery / mutation cut through wire
+serialisation. A cross-process transport keeps ``hub=None`` and runs
+every operation through frames.
 """
 
 import asyncio
@@ -40,8 +39,8 @@ __all__ = ("HubClient",)
 class HubClient:
     """One connection to a hub. Multiple ``AgentClient``s register through it.
 
-    M1 takes both ``link`` (V1 ``LocalLink`` only) and an explicit
-    ``hub`` reference. The link carries dispatched envelopes via
+    Takes a ``link`` (currently ``LocalLink``) and an explicit ``hub``
+    reference. The link carries dispatched envelopes via
     ``NotifyFrame``; the direct hub reference is used for register /
     discovery / mutation calls (cuts through wire serialisation when
     we're in-process).
@@ -75,13 +74,13 @@ class HubClient:
             async for frame in self._client_link.frames():
                 if isinstance(frame, NotifyFrame):
                     await self._dispatch_notify(frame)
-                # Other frame kinds (Accept/Error/Pong/Event) are M3 routes —
-                # M1's send path goes direct via Hub.post_envelope so AcceptFrame
-                # is unused here.
+                # Other frame kinds (Accept/Error/Pong/Event) bypass the
+                # demuxer — the in-process send path goes direct via
+                # ``Hub.post_envelope`` so ``AcceptFrame`` is unused here.
         except asyncio.CancelledError:
             raise
         except Exception:
-            # Receive loops must not propagate; M3 audit logs the cause.
+            # Receive loops must not propagate.
             pass
 
     async def _dispatch_notify(self, frame: NotifyFrame) -> None:
@@ -90,8 +89,7 @@ class HubClient:
         The hub sets ``recipient_id`` per delivery so broadcasts
         (``audience=None``) reach the right ``AgentClient`` without
         the demuxer re-walking session participants. Frames missing a
-        ``recipient_id`` (M1 legacy) fall back to ``audience``-based
-        routing.
+        ``recipient_id`` fall back to ``audience``-based routing.
         """
         if frame.recipient_id:
             client = self._clients.get(frame.recipient_id)
@@ -121,9 +119,8 @@ class HubClient:
 
         Direct hub call for register (in-process); the resulting
         ``agent_id`` is bound to this connection's endpoint so
-        dispatched ``NotifyFrame``s reach the right ``AgentClient``.
-        Phase 3 swaps to a ``HelloFrame``-driven bind for cross-process
-        correctness.
+        dispatched ``NotifyFrame``s reach the right ``AgentClient``. A
+        cross-process transport binds via ``HelloFrame`` instead.
 
         ``attach_plugin=True`` (default) attaches the ``NetworkPlugin``
         which adds ``say`` and ``delegate`` to ``agent.tools`` and
@@ -160,10 +157,9 @@ class HubClient:
 
     # ── Hub control-plane passthrough ────────────────────────────────────────
     #
-    # In V1 (LocalLink only) these forward directly to the in-process hub.
-    # Phase 3 swaps to frame-based RPC over WsLink; the call sites on
-    # ``AgentClient`` / handlers do not change. Holding the layering here
-    # is what keeps the Phase 3 migration small.
+    # Forwards directly to the in-process hub. A cross-process transport
+    # would replace these bodies with frame-based RPC; the call sites on
+    # ``AgentClient`` / handlers stay the same.
 
     # — Discovery —
 

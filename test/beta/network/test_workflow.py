@@ -2,15 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""M4 — workflow adapter + transition vocabulary.
+"""Workflow adapter + transition vocabulary tests.
 
 Three layers:
 
 * **Transitions vocabulary** (unit) — every target / condition resolves
   correctly; ``TransitionGraph.to_dict()`` + ``loads()`` round-trip
   through the named registry.
-* **WorkflowAdapter** (integration) — the four required patterns from
-  ``design/PLAN.md`` M4:
+* **WorkflowAdapter** (integration) — four orchestration patterns:
     1. Round-robin via ``WorkflowAdapter`` (cycles correctly).
     2. Sequential pipeline (each step transitions to the next).
     3. Swarm with tool-driven handoffs + revert-to-initiator.
@@ -487,7 +486,7 @@ async def test_workflow_manager_as_initiator_auto_pattern() -> None:
     """AutoPattern equivalent: manager is initiator + RevertToInitiator default.
 
     Manager directs by emitting handoff envelopes; respondents always
-    revert to the manager. No LLMSelectorTarget needed (Phase 2)."""
+    revert to the manager."""
     store = MemoryKnowledgeStore()
     hub = await Hub.open(store, ttl_sweep_interval=0, expectation_sweep_interval=0)
     link = LocalLink(hub)

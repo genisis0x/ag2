@@ -14,7 +14,7 @@ V1 ships ``FullTranscript`` (M2) and ``WindowedSummary`` (M3) as
 built-ins.
 """
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from autogen.beta.events import BaseEvent
 
@@ -24,7 +24,6 @@ from ..session import SessionMetadata
 __all__ = ("ViewPolicy",)
 
 
-@runtime_checkable
 class ViewPolicy(Protocol):
     """Per-participant projection.
 

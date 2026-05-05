@@ -15,14 +15,13 @@ on the same Protocol surface.
 """
 
 from collections.abc import AsyncIterator
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from .frames import Frame
 
 __all__ = ("LinkClient", "LinkEndpoint")
 
 
-@runtime_checkable
 class LinkClient(Protocol):
     """Tenant-side handle to the hub.
 
@@ -56,7 +55,6 @@ class LinkClient(Protocol):
         ...
 
 
-@runtime_checkable
 class LinkEndpoint(Protocol):
     """Hub-side handle to one connected client.
 

@@ -53,7 +53,6 @@ from autogen.beta.network.transitions import (
     TransitionGraph,
     TransitionRegistry,
     WorkflowGraphError,
-    default_transition_registry,
 )
 from autogen.beta.stream import MemoryStream
 from autogen.beta.testing import TestConfig
@@ -189,11 +188,11 @@ def test_custom_registry_does_not_leak_into_default() -> None:
 
 
 def test_default_transition_registry_singleton_is_lazy() -> None:
-    """``default_transition_registry()`` returns the same instance on
+    """``TransitionRegistry.default()`` returns the same instance on
     repeat calls (singleton) and is constructed on first call rather
     than at import time."""
-    r1 = default_transition_registry()
-    r2 = default_transition_registry()
+    r1 = TransitionRegistry.default()
+    r2 = TransitionRegistry.default()
     assert r1 is r2
     # Built-ins resolve.
     target = r1.target_from_dict({"name": "agent", "args": {"agent_id": "alice"}})

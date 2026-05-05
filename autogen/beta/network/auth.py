@@ -10,7 +10,7 @@ Protocol stays open so further schemes ship additively (JWT, mTLS, and
 signed-challenge are AG2 Cloud features).
 """
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol
 
 from .errors import AuthError
 from .identity import Passport
@@ -19,11 +19,9 @@ __all__ = (
     "AuthAdapter",
     "AuthRegistry",
     "NoAuth",
-    "default_registry",
 )
 
 
-@runtime_checkable
 class AuthAdapter(Protocol):
     """Validates a passport's auth claim at the connection handshake."""
 
@@ -44,11 +42,26 @@ class NoAuth:
 
 
 class AuthRegistry:
-    """Registry mapping ``scheme`` strings to ``AuthAdapter`` impls."""
+    """Registry mapping ``scheme`` strings to ``AuthAdapter`` impls.
+
+    Apps wanting ``ApiKeyAuth`` (Phase 3) construct their own
+    ``AuthRegistry([NoAuth(), ApiKeyAuth()])`` and pass it to
+    ``Hub(... auth=...)``. Use :meth:`default` for the V1 ``NoAuth``-only
+    default.
+    """
+
+    _DEFAULT: ClassVar["AuthRegistry | None"] = None
 
     def __init__(self, adapters: list[AuthAdapter]) -> None:
         # __init__ stores params; no side effects.
         self._adapters: dict[str, AuthAdapter] = {a.scheme: a for a in adapters}
+
+    @classmethod
+    def default(cls) -> "AuthRegistry":
+        """Return the lazily-initialised default registry — ``NoAuth`` only."""
+        if cls._DEFAULT is None:
+            cls._DEFAULT = cls([NoAuth()])
+        return cls._DEFAULT
 
     def get(self, scheme: str) -> AuthAdapter:
         try:
@@ -58,9 +71,3 @@ class AuthRegistry:
 
     def schemes(self) -> list[str]:
         return list(self._adapters.keys())
-
-
-# Default registry — ``NoAuth`` only. Apps wanting ``ApiKeyAuth`` (Phase
-# 3) construct their own ``AuthRegistry([NoAuth(), ApiKeyAuth()])`` and
-# pass it to ``Hub(... auth=...)``.
-default_registry = AuthRegistry([NoAuth()])

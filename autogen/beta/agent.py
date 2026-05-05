@@ -609,6 +609,18 @@ class Agent(Generic[TResult]):
         """Register an observer (before calling ask())."""
         self._observers.append(observer)
 
+    def add_policy(self, policy: AssemblyPolicy) -> "Agent[TResult]":
+        """Append an assembly policy to this agent's chain.
+
+        Policies run in order; a newly added policy runs after existing
+        ones. Construction-time ordering validation (warning on suspicious
+        sequences) only runs over policies passed via ``assembly=`` — late
+        additions skip the check, so callers should be confident in the
+        ordering they introduce.
+        """
+        self._policies.append(policy)
+        return self
+
     def task(
         self,
         title: str,

@@ -37,7 +37,7 @@ the agent.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol
 
 from ..envelope import EV_EXPECTATION_VIOLATED, EV_TEXT, Envelope
 from ..session import Expectation, SessionMetadata, SessionState
@@ -87,7 +87,6 @@ class ExpectationContext:
     now_seconds: float
 
 
-@runtime_checkable
 class ExpectationEvaluator(Protocol):
     """Pure predicate over ``(metadata, state, wal, clock)``.
 
@@ -105,7 +104,6 @@ class ExpectationEvaluator(Protocol):
     ) -> Violation | None: ...
 
 
-@runtime_checkable
 class ViolationHandler(Protocol):
     """What the hub does when an evaluator fires.
 

@@ -31,7 +31,7 @@ evaluated inside ``WorkflowAdapter.fold``, which has no metadata.
 
 import json
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from .envelope import EV_HANDOFF, Envelope
 from .errors import NetworkError
@@ -77,7 +77,6 @@ class TransitionDecision:
     close_reason: str = ""
 
 
-@runtime_checkable
 class TransitionTarget(Protocol):
     """Where the next turn goes. Pure resolver — no I/O, no awaitables."""
 
@@ -90,7 +89,6 @@ class TransitionTarget(Protocol):
     ) -> TransitionDecision: ...
 
 
-@runtime_checkable
 class TransitionCondition(Protocol):
     """When a transition fires. Pure predicate — no I/O."""
 
@@ -247,10 +245,11 @@ class TransitionRegistry:
     Tests / multi-tenant callers that need isolation construct their
     own and pass to ``TransitionGraph.loads(data, registry=)``. The
     module-level ``register_target`` / ``register_condition`` helpers
-    delegate to a lazily-initialised default singleton —
-    :func:`default_transition_registry` — for the common single-tenant
-    case.
+    delegate to :meth:`default` — a class-cached lazily-initialised
+    singleton — for the common single-tenant case.
     """
+
+    _DEFAULT: ClassVar["TransitionRegistry | None"] = None
 
     def __init__(self) -> None:
         self._targets: dict[str, type[TransitionTarget]] = {
@@ -259,6 +258,19 @@ class TransitionRegistry:
         self._conditions: dict[str, type[TransitionCondition]] = {
             cls.name: cls for cls in _BUILTIN_CONDITIONS
         }
+
+    @classmethod
+    def default(cls) -> "TransitionRegistry":
+        """Return the lazily-initialised process-wide default registry.
+
+        Mutated by the module-level ``register_target`` /
+        ``register_condition`` helpers. Tests that need isolation should
+        construct a fresh ``TransitionRegistry`` instead and pass it to
+        ``TransitionGraph.loads(..., registry=)``.
+        """
+        if cls._DEFAULT is None:
+            cls._DEFAULT = cls()
+        return cls._DEFAULT
 
     def register_target(self, target_cls: type[TransitionTarget]) -> None:
         """Register a custom :class:`TransitionTarget`. Re-registers replace."""
@@ -287,36 +299,19 @@ class TransitionRegistry:
         return cls(**data.get("args", {}))
 
 
-_default_registry: TransitionRegistry | None = None
-
-
-def default_transition_registry() -> TransitionRegistry:
-    """Return the lazily-initialised process-wide default registry.
-
-    Mutated by the back-compat ``register_target`` / ``register_condition``
-    helpers. Tests that need isolation should construct a fresh
-    ``TransitionRegistry`` instead and pass it to
-    ``TransitionGraph.loads(..., registry=)``.
-    """
-    global _default_registry
-    if _default_registry is None:
-        _default_registry = TransitionRegistry()
-    return _default_registry
-
-
 def register_target(target_cls: type[TransitionTarget]) -> None:
     """Register a custom :class:`TransitionTarget` on the default registry.
 
-    Equivalent to ``default_transition_registry().register_target(...)``.
+    Equivalent to ``TransitionRegistry.default().register_target(...)``.
     Re-registering the same name replaces the prior class.
     """
-    default_transition_registry().register_target(target_cls)
+    TransitionRegistry.default().register_target(target_cls)
 
 
 def register_condition(condition_cls: type[TransitionCondition]) -> None:
     """Register a custom :class:`TransitionCondition` on the default
     registry. Re-registers replace."""
-    default_transition_registry().register_condition(condition_cls)
+    TransitionRegistry.default().register_condition(condition_cls)
 
 
 # ── TransitionGraph ─────────────────────────────────────────────────────────
@@ -363,7 +358,7 @@ class TransitionGraph:
         """
         if isinstance(data, str):
             data = json.loads(data)
-        reg = registry if registry is not None else default_transition_registry()
+        reg = registry if registry is not None else TransitionRegistry.default()
         return cls(
             initial_speaker=data["initial_speaker"],
             transitions=[

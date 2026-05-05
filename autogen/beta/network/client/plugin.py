@@ -99,7 +99,7 @@ class NetworkPlugin(Plugin):
         once per ``(Agent, identity)``, so this is rare in practice.
         """
         super().register(agent)
-        agent._policies.append(NetworkContextPolicy(self._client))
+        agent.add_policy(NetworkContextPolicy(self._client))
 
     def register_workflow(self, graph: TransitionGraph) -> list[object]:
         """Materialise one LLM tool per :class:`ToolCalled` transition

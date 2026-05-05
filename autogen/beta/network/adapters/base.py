@@ -16,7 +16,7 @@ See ``design/sessions.md`` for the full contract. Key invariants:
 """
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from ..envelope import Envelope
 from ..session import SessionManifest, SessionMetadata, SessionState
@@ -25,7 +25,6 @@ from ..views.base import ViewPolicy
 __all__ = ("AdapterResult", "AdapterState", "SessionAdapter")
 
 
-@runtime_checkable
 class AdapterState(Protocol):
     """Marker Protocol — concrete adapters define their own dataclass.
 
@@ -47,7 +46,6 @@ class AdapterResult:
     auto_close_reason: str = ""
 
 
-@runtime_checkable
 class SessionAdapter(Protocol):
     """Code half of the manifest/adapter split.
 

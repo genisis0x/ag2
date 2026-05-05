@@ -15,7 +15,7 @@ so ``open()`` is intentionally absent from the M1 Protocol surface and
 will be added when the session adapter machinery lands.
 """
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from ..envelope import Envelope
 from ..identity import Passport, Resume
@@ -23,7 +23,6 @@ from ..identity import Passport, Resume
 __all__ = ("NetworkClient",)
 
 
-@runtime_checkable
 class NetworkClient(Protocol):
     """A participant in a network.
 

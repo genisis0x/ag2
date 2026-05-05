@@ -39,7 +39,7 @@ from ..adapters.consulting import ConsultingAdapter
 from ..adapters.conversation import ConversationAdapter
 from ..adapters.discussion import DiscussionAdapter
 from ..adapters.workflow import WorkflowAdapter
-from ..auth import AuthRegistry, default_registry
+from ..auth import AuthRegistry
 from ..envelope import (
     EV_SESSION_CLOSED,
     EV_SESSION_EXPIRED,
@@ -47,6 +47,7 @@ from ..envelope import (
     EV_SESSION_INVITE_ACK,
     EV_SESSION_INVITE_REJECT,
     EV_SESSION_OPENED,
+    EV_TEXT,
     Envelope,
 )
 from ..errors import (
@@ -181,7 +182,7 @@ class Hub:
     ) -> None:
         # __init__ stores params; side effects deferred to start()/hydrate().
         self._store = store
-        self._auth = auth if auth is not None else default_registry
+        self._auth = auth if auth is not None else AuthRegistry.default()
         self._clock = clock if clock is not None else _utc_now_iso
         self._ttl_sweep_interval = ttl_sweep_interval
         self._expectation_sweep_interval = expectation_sweep_interval
@@ -973,8 +974,6 @@ class Hub:
         default notify handler doesn't need to reach into private hub
         state to figure out whether it's the agent's turn.
         """
-        from ..envelope import EV_TEXT  # local to avoid cycle
-
         metadata = self._sessions.get(session_id)
         if metadata is None or metadata.is_terminal():
             return False

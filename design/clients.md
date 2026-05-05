@@ -177,6 +177,17 @@ class AgentClient:
     async def set_skill(self, skill_md: str | None) -> None: ...
     async def set_rule(self, rule: Rule) -> None: ...
 
+    # Send / receive hooks (Phase 3 — replaces the prior `transforms` design).
+    def add_send_hook(self, hook: Callable[[Envelope], Envelope | None]) -> None:
+        """Register a callable run on every outbound envelope before
+        the hub sees it. Returning ``None`` drops the envelope;
+        returning an ``Envelope`` replaces it. Hooks run in
+        registration order."""
+
+    def add_receive_hook(self, hook: Callable[[Envelope], Envelope | None]) -> None:
+        """Register a callable run on every inbound envelope before
+        the notify handler. Same semantics as ``add_send_hook``."""
+
     # Low-level
     async def inbox_iter(self) -> AsyncIterator[Envelope]:
         """For custom handlers that bypass the per-session-type registry."""
@@ -200,6 +211,15 @@ async def default_handler(envelope: Envelope, client: AgentClient) -> None:
         wal, participant_id=client.agent_id, session=session.metadata,
     )
 
+    # Phase 2.0: dedup duplicate replies after redelivery.
+    prior = client._hub.find_envelope_by_causation(
+        envelope.session_id,
+        sender_id=client.agent_id,
+        causation_id=envelope.envelope_id,
+    )
+    if prior is not None:
+        return  # already replied to this envelope; redelivery is a no-op
+
     deps = client.stamp_dependencies(session, envelope)
     reply = await client.agent.ask(
         *projection,
@@ -211,6 +231,8 @@ async def default_handler(envelope: Envelope, client: AgentClient) -> None:
 ```
 
 The `NetworkPlugin` — attached at registration — already added the LLM verbs to `agent.tools`, so the handler doesn't need to inject them per turn. Tools resolve their bindings from the dependencies stamped by `stamp_dependencies`.
+
+**Resume on reconnect (Phase 2.0)**: on `HubClient.open` (the connection-level hello), the `AgentClient` calls `Hub.pending_turns_for(self.agent_id)` and, for each `PendingTurn`, fetches the triggering envelope and runs `default_handler` against it. Same code path as a live notify; the dedup query above ensures redelivery is idempotent. No new resume-specific branch in user-visible code.
 
 ## Trust boundary recap
 

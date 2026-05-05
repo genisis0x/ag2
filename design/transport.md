@@ -79,6 +79,12 @@ Streaming uses `chunk` frames carrying `(envelope_id, sender_id, audience, conte
 
 `Session.send_chunk(envelope_id, content_delta)` and `Session.iter_chunks(envelope_id) -> AsyncIterator[str]` are the public API. View policies do not see in-progress chunks; they project finalized envelopes only. The chunk frames are wire-level and not exposed as LLM tools.
 
+## Phase 2.0 — In-process cursor + replay
+
+The `receipt` frame is wired to advance the per-agent `inbox.cursor`. The default notify handler issues a Receipt only after the handler completes (or after the dedup query finds a prior reply). On `hello`, hub replays unacked envelopes from the cursor up to the WAL head; the `AgentClient` additionally calls `Hub.pending_turns_for(self.agent_id)` to wake up unfinished turns whose triggering envelope had already been ack'd in a prior session (see [failure_modes.md](failure_modes.md) mode 11).
+
+These run over `LocalLink` for V1 in-process; Phase 3 exercises the same semantics on `WsLink`.
+
 ## Phase 3 — WsLink
 
 Same `Link` Protocol, WebSocket-backed. Adds:
@@ -113,4 +119,4 @@ The HTTP CRUD surface (10 endpoints, mounted at `/v1/*`) lives in `autogen/beta/
 
 `build_app(hub: Hub) -> Starlette` returns a Starlette app mountable in any larger ASGI project. `HttpServer(hub, host, port)` wraps it with uvicorn for standalone hosting. `starlette` and `uvicorn` are lazy-imported so the network package stays install-optional.
 
-Anything beyond these ten — metrics, archival, force-close, list-sessions, knowledge bridge, task endpoints — is deferred to AG2 Cloud.
+Anything beyond these ten — metrics, archival, force-close, list-sessions, knowledge bridge, task endpoints — is out of scope for framework-core (post Phase 4).

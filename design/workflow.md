@@ -70,7 +70,7 @@ class Transition:
 | `RevertToInitiatorTarget` | — | `state.creator_id` |
 | `TerminateTarget` | `reason: str = "after_work"` | `next_speaker=None`, populates `close_reason` |
 
-`RandomTarget`, `LLMSelectorTarget`, and `NestedSessionTarget` are Phase 2 (see [Deferred](#deferred-to-phase-2)).
+`LLMSelectorTarget` is Phase 2.0; `RandomTarget` and `NestedSessionTarget` are Phase 4 (on-demand). See [Deferred — by phase](#deferred--by-phase).
 
 ### Built-in TransitionConditions (V1)
 
@@ -187,7 +187,7 @@ The adapter is stateless and pure. All state lives in `WorkflowState`, folded fr
 2. Each participant's notify handler calls `adapter.validate_send` for itself before engaging the LLM.
 3. Only the agent matching `state.expected_next_speaker` survives the gate; everyone else's handler is a no-op.
 
-Per-recipient routing (stamping `audience=[expected_next_speaker]` on outbound dispatch) is a Phase 2 optimization that adds a `dispatch_audience` hook to the `SessionAdapter` Protocol. Not on the M4 critical path — broadcast cost is negligible at <20 participants.
+Per-recipient routing (stamping `audience=[expected_next_speaker]` on outbound dispatch) is a Phase 3 optimization that adds a `dispatch_audience` hook to the `SessionAdapter` Protocol. Not on the M4 critical path — broadcast cost is negligible at <20 participants.
 
 ## LLM-driven handoffs
 
@@ -209,7 +209,7 @@ async def transfer_to_engineering(
 
 The adapter's `fold` reads `event_type=="ag2.handoff"`, the `ToolCalled("transfer_to_engineering")` condition fires in `on_accepted`, and `state.expected_next_speaker` advances. The LLM never sees `expected_next_speaker` directly — it sees a button labeled "transfer," and the protocol does the rest. **Handoffs are a UX over the choreography.**
 
-`OnContextCondition`-style handoffs (no LLM) become `Transition(when=ContextExpr(...), then=...)` once Phase 2 ships `ContextExpr`. The vocabulary is identical; only the evaluation strategy differs.
+`OnContextCondition`-style handoffs (no LLM) become `Transition(when=ContextExpr(...), then=...)` once Phase 2.1 ships `ContextExpr`. The vocabulary is identical; only the evaluation strategy differs.
 
 `ag2.handoff` is added to the framework's stable event-type set in [envelope.md](envelope.md). Like `ag2.msg.text`, it's adapter-agnostic — any future adapter that wants tool-driven transitions reads it the same way.
 
@@ -305,19 +305,28 @@ register_condition(WhenTurnCount)
 
 Custom classes serialize the same way V1 ones do, as long as they're `@dataclass(slots=True)` with JSON-friendly fields. The registry is process-local; cross-process usage (Phase 3) requires both ends to register the same name.
 
-## Deferred to Phase 2
+## Deferred — by phase
 
 Kept out of M4 to keep the core surface tight. The Protocol design accommodates each without architectural disruption.
 
-- `RandomTarget` — random speaker pick.
-- `LLMSelectorTarget` — selector agent picks the next speaker. Requires the hub to resolve a target asynchronously (open a sub-consulting session, await reply, parse the pick). V1 expresses the same use case via the manager-as-initiator recipe above.
-- `NestedSessionTarget` — opens a child session under `parent_session_id`. The Network's `SocietyOfMind` story. Needs close-cascade tweaks.
+### Phase 2.0
+- `LLMSelectorTarget` — selector agent picks the next speaker. Requires the hub to resolve a target asynchronously (open a sub-consulting session, await reply, parse the pick). The AG2-classic `AutoPattern` equivalent.
+- Migration helper: classic `Pattern` → `WorkflowGraph`. Drop-in adoption path for users moving off `GroupChat` + `Handoffs` + `AfterWork`.
+
+### Phase 2.1
 - `ContextExpr` and `TurnCountReached` — pure-Python no-LLM conditions. Need a shared expression evaluator (not duplicated from `rules.py`).
+- `OnFailure` transitions — saga choreography composed from existing `Transition` vocabulary. Saga skeleton lives in `examples/saga.py`.
+
+### Phase 3
+- `dispatch_audience` hook on `SessionAdapter` — per-recipient routing optimization that earns its keep when network round-trips are real.
+
+### Phase 4 (on-demand)
+- `RandomTarget` — random speaker pick.
+- `NestedSessionTarget` — opens a child session under `parent_session_id`. The Network's `SocietyOfMind` story. Needs close-cascade tweaks.
 - `SubGraph` target — composing one workflow into another.
-- Saga / compensation — `OnFailure` transitions + reversal targets.
-- `dispatch_audience` hook on `SessionAdapter` — per-recipient routing optimization.
-- Migration helper: classic `Pattern` → `WorkflowGraph`.
-- Cross-process auto-shipping of registered classes to a remote hub.
+
+### Cut
+- Cross-process auto-shipping of registered classes to a remote hub. Security smell — pickled callable code over the wire is a deserialisation hazard. The cross-process answer is "both ends deploy the same Python."
 
 ## Invariants
 

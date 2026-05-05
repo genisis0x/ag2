@@ -180,7 +180,7 @@ Adapters declare protocol-shape contracts that the hub enforces. Expectations ar
 | `max_silence` | `seconds` | Session has had no envelopes from anyone for T |
 | `min_participation` | `count`, `window_seconds` | Participant posts fewer than `count` envelopes per `window_seconds` |
 
-Custom evaluators (user-registered Python callables `(metadata, state, wal_tail, now) -> bool`) are a Phase 2 extension.
+Custom evaluators (user-registered Python callables `(metadata, state, wal_tail, now) -> bool`) are a Phase 2.1 extension.
 
 ### Built-in violation handlers
 
@@ -218,7 +218,7 @@ Tenants override per-session by passing `manifest_overrides={"expectations": [..
 | `discussion` | 1+N (≥2) | Multi-participant turn-taking. `knobs={"ordering": "dynamic" \| "static" \| "round_robin"}`. | `WindowedSummary(recent_n=N*2)` |
 | `workflow` | 1+N (≥2) | Orchestrated flow driven by a declarative `TransitionGraph` in `knobs["graph"]`. Replaces AG2-classic's `GroupChat` + `Handoffs` + `AfterWork`. See [workflow.md](workflow.md). | `WindowedSummary(recent_n=N*2)` |
 
-Each adapter is < 250 LOC. `notification`, `broadcast`, `auction` ship in Phase 2 (or in `examples/`) as proofs that the Protocol is genuinely extensible — V1 framework-core doesn't include them.
+Each adapter is < 250 LOC. `notification`, `broadcast`, `auction` live in `examples/` as proofs that the Protocol is genuinely extensible — framework-core doesn't include them.
 
 ### Discussion ordering knobs
 
@@ -290,4 +290,4 @@ Re-registering an existing `(type, version)` replaces the prior adapter and logs
 - Manifests are snapshotted into `SessionMetadata.manifest` at create time. Re-registering an adapter at a new `version` (e.g., `consulting@v2` after `consulting@v1`) does **not** mutate any in-flight session; existing sessions keep their original manifest for life. There is no migration tooling in V1.
 - Adapter decisions are deterministic functions of `(metadata, AdapterState)` where `AdapterState = fold(envᵢ, fold(envᵢ₋₁, ... fold(env₁, initial_state())))`.
 - The WAL is append-only. Mutating past envelopes is never allowed.
-- Closing a session is hub-initiated (`Hub.close_session` or TTL sweep) and cascades: every non-terminal task in the session transitions to `expired` (V1) before `EV_SESSION_CLOSED` is broadcast. Phase 2 adds `cancelled` as the cascade target.
+- Closing a session is hub-initiated (`Hub.close_session` or TTL sweep) and cascades: every non-terminal task in the session transitions to `expired` (V1) before `EV_SESSION_CLOSED` is broadcast. Phase 2.0 adds `cancelled` as the cascade target.

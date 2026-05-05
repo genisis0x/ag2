@@ -111,7 +111,7 @@ class NetworkContextPolicy:
         return [prefix, *prompts], events
 ```
 
-Phase 2 wires `network_changed` push frames so the cache is invalidated proactively rather than just via TTL.
+Phase 3 wires `network_changed` push frames so the cache is invalidated proactively rather than just via TTL.
 
 ## DI surface for user tools
 
@@ -404,9 +404,9 @@ The handoff tool surface is per-session: agents only see the handoffs that exist
 | `subscribe` to a session I'm not a participant of | Power-user feature; defer |
 | Streaming chunk send / iter | Wire-level, not LLM-level |
 | `set_rule`, `unregister`, hub admin | Not the LLM's job — tenant Python code |
-| `leave` (drop out of a session without closing it) | V1 has fixed quorum; leaving would break adapter participant counts. Phase 2 may add `sessions(action="leave")` once we have an `auto_repartition` knob on adapters. |
+| `leave` (drop out of a session without closing it) | V1 has fixed quorum; leaving would break adapter participant counts. Phase 4 (on-demand) may add `sessions(action="leave")` once we have an `auto_repartition` knob on adapters. |
 | `set_resume`, `set_skill`, `add_example` (self-attest more) | Sycophancy hazard: an LLM editing its own resume mid-conversation is a self-promotion vector. Resume mutation is tenant Python code only. |
-| Cross-peer knowledge read | The `context(action="search", scope="knowledge")` reads only the calling agent's `KnowledgeStore`. Cross-peer knowledge bridge is deferred to AG2 Cloud; an agent that wants someone else's knowledge opens a session and asks. |
+| Cross-peer knowledge read | The `context(action="search", scope="knowledge")` reads only the calling agent's `KnowledgeStore`. Cross-peer knowledge bridge is out of scope for framework-core (post Phase 4); an agent that wants someone else's knowledge opens a session and asks. |
 
 ## Why these tools and not others
 

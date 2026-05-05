@@ -157,6 +157,31 @@ async def read_wal(
     self, session_id: str, *, since: int = 0, until: int | None = None,
 ) -> list[Envelope]: ...
 
+def find_envelope_by_causation(
+    self,
+    session_id: str,
+    *,
+    sender_id: str,
+    causation_id: str,
+) -> Envelope | None:
+    """Look up an envelope by ``(sender_id, causation_id)`` within a
+    session's WAL. Used by the default notify handler to short-circuit
+    duplicate replies after redelivery (see failure_modes.md mode 11).
+    Returns the first match; ``None`` if absent.
+
+    Synchronous because the index is in-memory; matches the
+    ``can_send`` precedent for pure cache lookups. The index is rebuilt
+    from the WAL on ``hydrate()`` — no separate persisted file. Phase 2.0."""
+
+async def pending_turns_for(self, agent_id: str) -> list[PendingTurn]:
+    """Return non-terminal sessions where adapter state expects this
+    agent to act but no reply has landed since the triggering envelope.
+
+    Each ``PendingTurn`` carries ``session_id``, ``last_envelope_id``,
+    and ``reason`` (e.g. ``"workflow_next_speaker"``,
+    ``"consulting_respondent"``). Used by the default notify handler
+    on reconnect to wake up unfinished turns. Phase 2.0."""
+
 # ── Tasks (observe-only; tasks are owned by the agent — see tasks.md) ───────
 
 async def observe_task(self, metadata: TaskMetadata) -> None:
@@ -176,9 +201,17 @@ async def list_tasks(
     limit: int = 50,
 ) -> list[TaskMetadata]: ...
 
-async def expire_due_tasks(self) -> None:
-    """Sweeper hook: walk _tasks, transition expired ones to EXPIRED,
-    emit ag2.task.expired."""
+async def expire_due(self) -> None:
+    """Sweeper hook: walk active sessions and tasks, transition expired
+    ones to ``EXPIRED``, emit ``ag2.session.expired`` /
+    ``ag2.task.expired``. Public so users running their own scheduler
+    can drive it directly."""
+
+async def evaluate_expectations(self) -> None:
+    """Sweeper hook: evaluate every expectation on every active session
+    and apply registered violation handlers. Public sibling of
+    ``expire_due()``; Phase 2.0 promotion of the internal
+    ``_expectation_tick``."""
 
 # ── Subscriptions ───────────────────────────────────────────────────────────
 
@@ -298,7 +331,7 @@ The framework-core `Watch` primitive is NOT used here — it is the trigger prim
 
 All emitted envelopes go through `post_envelope` so they participate in the same WAL-append + dispatch path as agent-emitted envelopes. There is no parallel "hub-internal events" channel.
 
-Phase 3 adds a third sweeper for transport idempotency dedup.
+Phase 2.0's idempotency dedup is a **query** (`Hub.find_envelope_by_causation`), not a separate sweeper or stored table — the WAL is the source of truth and the in-memory index is rebuilt on `hydrate()` by walking it once. No sweeper needed.
 
 ## Audit log
 
@@ -332,10 +365,16 @@ Manifests are snapshotted into `SessionMetadata.manifest` at create time. If `co
 - The hub never calls `Agent.ask` directly. Every delivery is via the `Link.notify(envelope)` frame; the receiving `AgentClient` runs the handler.
 - Every WAL append is paired with the fold, the `on_accepted` decision, and subscription fan-out under a single per-session lock so subscribers see exactly-once delivery within one process and adapter state never desyncs from the WAL.
 - Every state transition is paired with the envelope that drove it under the same lock.
-- All hub mutations route through `_apply_session_event` / `_apply_task_event` so future audit log writers (AG2 Cloud) hook one place.
+- All hub mutations route through `_apply_session_event` / `_apply_task_event` so external audit log writers can hook one place if needed.
 
-## At-least-once delivery (cross-process — Phase 3)
+## At-least-once delivery
 
-Across reconnects, every WAL envelope is delivered ≥1 time per recipient before its session closes. The receiving `AgentClient` checkpoints `inbox.cursor` on every successful `receipt(status="ack")`. On reconnect, hub replays from the cursor up to the WAL head. Phase 3 wires this; V1 in-process is exactly-once by lock construction.
+Across reconnects, every WAL envelope is delivered ≥1 time per recipient before its session closes. The receiving `AgentClient` checkpoints `inbox.cursor` on every successful `receipt(status="ack")`. On reconnect, hub replays from the cursor up to the WAL head.
+
+| Phase | What ships |
+|---|---|
+| V1 | Exactly-once by lock construction (single-process, no cross-process replay needed). |
+| Phase 2.0 | In-process redelivery via `inbox.cursor` over `LocalLink`. Default handler issues Receipt only after handler completes; on Hello, hub replays unacked. |
+| Phase 3 | Cross-process variant over `WsLink`. Same semantics on the wire. |
 
 This is an explicit framework invariant — not an implementation detail. New transports must preserve it.

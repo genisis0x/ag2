@@ -71,6 +71,18 @@ class Task:
     async def progress(self, payload: dict[str, Any]) -> None:
         """Emit TaskProgress; merges payload into metadata.progress."""
 
+    async def checkpoint(self, state: dict[str, Any]) -> None:
+        """Phase 2.0: persist owner-supplied resume state.
+
+        Writes ``state`` to ``tasks/{task_id}/checkpoint.json`` (last
+        write wins). Different from ``progress`` — progress is
+        observable; checkpoints are for restart recovery. Owner chooses
+        what to checkpoint and when.
+
+        Read back at construction time via
+        ``agent.task(title, resume_from=task_id)``.
+        """
+
     async def complete(self, result: Any = None) -> None:
         """Terminal: emit TaskCompleted; state ← COMPLETED."""
 
@@ -98,6 +110,7 @@ class Agent:
         description: str = "",
         payload: dict[str, Any] | None = None,
         ttl_seconds: int | None = None,
+        resume_from: str | None = None,           # Phase 2.0
     ) -> Task: ...
 ```
 
@@ -213,7 +226,7 @@ The hub does **not** create, assign, cancel, or retry tasks. It observes. Specif
 - **Cascades on session close** — non-terminal tasks tied to a closed session transition to `EXPIRED` with `reason="session_closed"` before `EV_SESSION_CLOSED` lands. The owner sees this on its stream via the mirror.
 - **Records observations on terminal events.** When a terminal task envelope (`EV_TASK_RESULT` / `EV_TASK_ERROR` / `EV_TASK_EXPIRED`) lands and `TaskSpec.payload` carries a `capability` tag, the hub calls `Hub.record_observation(owner_id, capability=, outcome=, duration_ms=)` to update `Resume.observed[capability]`. Tasks without a capability tag don't update observed stats. See [identity.md](identity.md) for the resume mutation contract.
 
-There is no `Hub.create_task`. There is no `Hub.cancel_task` in V1. Cancellation, if needed, is the owner's responsibility — they call `task.fail("cancelled by request")` or `task.complete(...)` early. Phase 2 may add a hub-mediated cancellation request envelope (`ag2.task.cancel_request`) the owner is free to honour or ignore.
+There is no `Hub.create_task`. There is no `Hub.cancel_task` in V1. Cancellation, if needed, is the owner's responsibility — they call `task.fail("cancelled by request")` or `task.complete(...)` early. Phase 2.0 adds a hub-mediated cancellation request envelope (`ag2.task.cancel_request`) the owner is free to honour or ignore.
 
 ```python
 # Hub public API for tasks (V1):
@@ -259,9 +272,11 @@ One LLM verb on the surface; both paths produce identical observable Task events
 | run_subtask and Task are unrelated | run_subtask wraps in Task; same lifecycle, same observer surface |
 | Network has parallel notion of "delegated task" | Network is one observer; same primitive, more witnesses |
 
-## Phase 2 additions
+## Phase 2.0 additions
 
-- `TaskState.CANCELLED` + `task.cancel(reason)` (owner-driven) + `EV_TASK_CANCELLED`
-- `ag2.task.cancel_request` envelope: peer asks owner to stop; owner free to honour or ignore
-- `TaskPhase` + `current_phase` + `TaskPhaseEntered` / `TaskPhaseCompleted` events for saga-style multi-step tasks with restart/resume semantics. `current_phase` advances on every phase event and persists on disk via the network mirror; a restarting hub `hydrate()`s observed task state and the owner can resume from the last committed phase if it persisted phase metadata locally.
+- `Task.checkpoint(state: dict)` — opt-in primitive for restart-recoverable work. Persists JSON to `tasks/{task_id}/checkpoint.json`. Owner chooses what to checkpoint; `agent.task(resume_from=task_id)` reads it on construction. The framework provides storage but never inspects the contents.
+- `TaskState.CANCELLED` + `task.cancel(reason)` (owner-driven) + `EV_TASK_CANCELLED`.
+- `ag2.task.cancel_request` envelope: peer asks owner to stop; owner free to honour or ignore.
 - `tasks(action="cancel", task_id, reason?)` LLM verb wires up the request envelope.
+
+Saga-style multi-step tasks compose from `Task.checkpoint` + the Phase 2.1 `OnFailure` workflow transitions. `TaskPhase` from the original draft is replaced by user code carrying its own phase markers inside the checkpoint dict — there's no need for a separate phase concept on the framework. The skeleton lives in `examples/saga.py`.

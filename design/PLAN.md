@@ -20,25 +20,25 @@
 ## Non-goals (V1)
 
 - WebSocket / HTTP transport (Phase 3)
-- Rule transforms (Phase 3)
+- Per-envelope tenant logic via `AgentClient` send/receive hooks (Phase 3)
 - Cross-process / multi-host hub deployment
-- JWT / mTLS / SignedChallenge auth — V1 ships `NoAuth` only
-- Multi-hub federation; multi-identity per Agent; signed envelope chains
-- Token / cost budget enforcement; archival sweeper; audit log rotation (V1 writes a single `audit.jsonl` indefinitely)
-- Task phases; task cancellation; custom expectation evaluators (Phase 2)
-- Saga / compensation engine; circuit breakers (app-level concerns)
-- `notification`, `broadcast`, `auction` adapters; `BySpeaker`, `PreviousOnly` views (Phase 2 on demand)
-- `Composite` view policy (Phase 2)
-- 3 expectation kinds — `turn_within`, `progress_within`, `min_participation` (Phase 2)
-- 3 violation handlers — `warn`, `hide`, `remove` (Phase 2)
-- N-of-M quorum tracking — V1 ships all-or-nothing accept; partial-quorum recomputation, `required_acks` integer, and `quorum_changed` events are Phase 2
-- `drop_oldest` / `drop_newest` inbox overflow policies — V1 reject-only
-- Discussion `dynamic` and `static` ordering modes — V1 ships round_robin only
-- Streaming `chunk` frames at the wire layer — V1 is text-only envelopes
-- Rate limiter token bucket — V1 honors `delegation_depth` and concurrency caps but skips per-minute throttle
+- JWT / mTLS / SignedChallenge auth — V1 ships `NoAuth` only (post Phase 4)
+- Multi-hub federation; multi-identity per Agent; signed envelope chains (post Phase 4)
+- Token / cost budget enforcement; archival sweeper; audit log rotation — V1 writes a single `audit.jsonl` indefinitely (Phase 4)
+- Task cancellation, `Task.checkpoint` — saga primitives (Phase 2.0); custom expectation evaluators (Phase 2.1)
+- Saga / compensation engine — composes from `Task.checkpoint` + `OnFailure` transitions; not a framework module. Circuit breakers (app-level concerns)
+- `notification`, `broadcast`, `auction` adapters live in `examples/` as proofs of extensibility; `BySpeaker`, `PreviousOnly` views (Phase 4 on demand)
+- `Composite` view policy (Phase 2.1)
+- 3 expectation kinds — `turn_within`, `progress_within`, `min_participation` (Phase 2.0)
+- 3 violation handlers — `warn`, `hide`, `remove` (Phase 2.0)
+- N-of-M quorum tracking — V1 ships all-or-nothing accept; partial-quorum recomputation, `required_acks` integer, and `quorum_changed` events are Phase 2.0
+- `drop_oldest` / `drop_newest` inbox overflow policies — V1 reject-only (Phase 2.1)
+- Discussion `dynamic` and `static` ordering modes — V1 ships round_robin only (Phase 2.1)
+- Streaming `chunk` frames at the wire layer — V1 is text-only envelopes (Phase 2.1)
+- Rate limiter token bucket — V1 honors `delegation_depth` and concurrency caps but skips per-minute throttle (Phase 2.1)
 - `allowed_events` field on `SessionManifest` — removed entirely (was never validated)
 
-Everything in this list is an AG2 Cloud or later-phase concern. Framework-core V1 always works without it.
+Everything in this list is a later-phase or post Phase 4 concern. Framework-core V1 always works without it.
 
 ## Core principles
 
@@ -198,7 +198,7 @@ Beta suite total: **1596 passing**, zero regressions across milestones.
 **Framework-core precondition (separate PR; lands before M1):**
 - New `autogen/beta/task.py` — `Task`, `TaskSpec`, `TaskState`, `TaskMetadata`, `Agent.task(...)` entry point, `TaskInject` annotation
 - Extend existing `autogen/beta/events/task_events.py`: add `TaskExpired`; widen `TaskCompleted.result` to `Any`; add optional `spec` to `TaskStarted` and `payload` to `TaskProgress` (additive, backward-compatible)
-- `_spawn_subtask` is **not** wrapped in a Task in V1 — `_run_task` already emits `TaskStarted/Progress/Completed/Failed` on the parent stream, which is the contract the network mirror observes. Wrapping (so `TaskInject` resolves inside subagent context) is a Phase 2 nice-to-have
+- `_spawn_subtask` is **not** wrapped in a Task in V1 — `_run_task` already emits `TaskStarted/Progress/Completed/Failed` on the parent stream, which is the contract the network mirror observes. Wrapping (so `TaskInject` resolves inside subagent context) is a Phase 4 nice-to-have
 
 #### M1 — Foundation ✅ (shipped, ~1100 LOC)
 
@@ -274,7 +274,7 @@ The orchestrator surface — successor for AG2-classic's `GroupChat` + `Handoffs
 
 **Design refinements during M4:**
 - `TransitionTarget.resolve` and `TransitionCondition.evaluate` deliberately take only `(state, envelope)` — no metadata. `WorkflowState` carries `participant_order` (for `RoundRobinTarget`) and `creator_id` (for `RevertToInitiatorTarget`) so transitions can be evaluated inside `WorkflowAdapter.fold`, which has no metadata access. Doc previously hinted at `(metadata, state, envelope)` — workflow.md will follow up.
-- Handoff tools are scoped per-agent (registered onto `agent.tools`) rather than per-session. If an agent joins multiple workflows, the union of tools is fine: each tool emits on the *current* session, and non-matching adapters fall through to `default_target`. Per-session scoping is Phase 2 once we have a clean reason to need it.
+- Handoff tools are scoped per-agent (registered onto `agent.tools`) rather than per-session. If an agent joins multiple workflows, the union of tools is fine: each tool emits on the *current* session, and non-matching adapters fall through to `default_target`. Per-session scoping is Phase 4 (on-demand) once we have a clean reason to need it.
 - `WorkflowState.graph_data` stores the JSON-friendly `to_dict()` form. `fold` deserialises on each call (cheap; the graph is small and bounded). Caching the deserialised graph on the adapter would tie state to the adapter instance, which violates the stateless-adapter principle.
 - `WorkflowGraph.sequence(steps)` sets `max_turns=len(steps)` so the pipeline terminates cleanly after the last step posts. The exit criterion's "triage closes via TerminateTarget" is exercised in tests via `hub.close_session(...)` (deterministic) rather than waiting on the LLM to call `sessions(action="close")`.
 
@@ -282,42 +282,83 @@ Exit: ✅ Validated by 26 in-tree integration tests in `test/beta/network/test_m
 
 See [workflow.md](workflow.md) for the full design.
 
-### Phase 2 — Multi-participant power features
+### Phase 2.0 — Durability and adoption
 
-- `TaskState.CANCELLED` + `task.cancel(reason)` + `EV_TASK_CANCELLED` + `ag2.task.cancel_request` envelope
-- `TaskPhase` + `current_phase` + phase events for saga-style tasks
-- Custom expectation kinds (user-registered evaluators)
-- 3 additional expectation evaluators: `turn_within`, `progress_within`, `min_participation`
-- 3 additional violation handlers: `warn`, `hide`, `remove`
-- N-of-M quorum tracking — `required_acks` integer, partial-quorum recomputation, `quorum_changed` events
+The unmet need: long-running sessions and workflows that survive interruption and resume without starting over. AG2-classic's `GroupChat` can't do this natively; users have asked for it repeatedly. V1 ships durable WAL + deterministic fold, so the hub-side state already survives restart — the gap is the agent-side activation mechanism.
+
+Phase 2.0 closes that gap with **primitives, not a system**. Each item is a method or a vocabulary entry; default handlers compose them into useful behavior; users override the handlers if they want different semantics. **No new protocol shape**: the WAL stays append-only, adapters stay stateless, fold stays pure.
+
+**Durability primitives:**
+- `inbox.cursor` — durable per-agent read position. Receipt frames advance it on successful handler completion. Transport replays unacked envelopes on Hello.
+- `Hub.find_envelope_by_causation(session_id, sender_id, causation_id) -> Envelope | None` — idempotency query. Default handler checks before sending replies; redelivery doesn't produce duplicates. Index rebuilt by walking WAL on `hydrate()`.
+- `Hub.pending_turns_for(agent_id) -> list[PendingTurn]` — wake-up query. Returns sessions where adapter state expects this agent to act but no reply has landed. Default handler calls on reconnect and re-runs the existing `_process_text` path against the triggering envelope. **Same code path as live notifies** — no resume-specific branch in user-visible code.
+- `Task.checkpoint(state: dict)` — opt-in framework-core primitive. Persists JSON to `tasks/{id}/checkpoint.json`. `agent.task(resume_from=task_id)` reads it on construction. The owner chooses what to checkpoint and when; the framework provides storage.
+
+**Liveness expectations** (registered through the existing `register_expectation_evaluator` registry — no new infrastructure):
+- 3 evaluators: `turn_within`, `progress_within`, `min_participation`
+- 3 violation handlers: `warn`, `hide`, `remove`
+
+**Other primitives:**
+- `TaskState.CANCELLED` + `task.cancel(reason)` — owner-driven, plus `EV_TASK_CANCELLED` and `ag2.task.cancel_request` (peer asks; owner free to honour or ignore).
+- N-of-M quorum tracking — `required_acks` integer, partial-quorum recomputation, `ag2.session.quorum_changed` events.
+- `LLMSelectorTarget` — workflow transition target that opens a sub-consulting session to pick the next speaker. The AG2-classic `AutoPattern` equivalent.
+- Classic `Pattern` → `WorkflowGraph` migration helper — drop-in adoption path for users moving off `GroupChat` + `Handoffs` + `AfterWork`.
+
+**Hygiene** (tools-not-systems): sweeper hooks promoted to first-class methods (`Hub.expire_due()` already public; rename internal `_expectation_tick` to public `Hub.evaluate_expectations()`) so users running their own scheduler don't reach into privates.
+
+### Phase 2.1 — Sugar
+
+Useful but not load-bearing. Each ships when there's user demand.
 - `Composite` view policy
-- `BySpeaker`, `PreviousOnly` view policies (only on demand)
-- `notification`, `broadcast`, `auction` adapters as proofs of extensibility (live in `examples/` if not framework-core)
 - Discussion `dynamic` and `static` ordering modes
 - Streaming `chunk` frames + `Session.send_chunk` / `Session.iter_chunks`
-- Audit log daily rotation
-- `drop_oldest` / `drop_newest` inbox overflow policies
+- `ContextExpr`, `TurnCountReached` workflow conditions
 - Rate limiter token bucket (per-minute, burst)
-- `network_changed` push + cache invalidation in `NetworkContextPolicy`
-- `inbox_pressure` backpressure events
-- Adapter state cache benchmark regression suite
-- Workflow extensions: `RandomTarget`, `LLMSelectorTarget` (async sub-session resolution), `NestedSessionTarget` (SocietyOfMind), `ContextExpr` and `TurnCountReached` conditions, `SubGraph` composition target, saga / `OnFailure` transitions, `dispatch_audience` adapter hook (per-recipient routing optimization), classic `Pattern` → `WorkflowGraph` migration helper
+- Custom expectation evaluators (user-registered Python callables)
+- `drop_oldest` / `drop_newest` inbox overflow policies
+- `OnFailure` transitions — saga choreography composed from existing `Transition` vocabulary
 
 ### Phase 3 — Cross-process
+
+Tightened: durability primitives ship in 2.0 over `LocalLink`, so Phase 3 is the wire-level work to make them work across hosts. No new protocol concepts.
 
 - `WsLink` (WebSocket transport) — same `Link` Protocol surface
 - HTTP CRUD surface (10 endpoints) via Starlette
 - `ApiKeyAuth` adapter
-- Reconnect with subscription cursor + at-least-once redelivery via `inbox.cursor`
-- `RuleChangedFrame` push + `set_rule` API hot-reload
-- Rule transforms (4 stages, named + Python forms) + standard library transforms (`redact_pii`, `truncate_long_content`, `stamp_audit_header`)
-- Idempotency dedup table + sweeper
+- Cross-process cursor replay — the in-process semantics from 2.0 already work; Phase 3 exercises them on the wire
+- `network_changed` push frame + cache invalidation in `NetworkContextPolicy`
+- `AgentClient.add_send_hook(callable)` / `add_receive_hook(callable)` — two hook points for tenant-side per-envelope logic. Replaces the prior 4-stage `TransformPipeline` design; the stdlib of named transforms (`redact_pii`, `truncate_long_content`, `stamp_audit_header`) lives in `examples/`, not framework-core.
+- `dispatch_audience` adapter hook — per-recipient routing optimization that earns its keep when network round-trips are real
 
-### Phase 4 — Polish
+### Phase 4 — On-demand
 
+Ships when a real user asks. The Protocol design accommodates each without architectural change.
+
+- `SubGraph` workflow target (workflow composition)
+- `BySpeaker`, `PreviousOnly` view policies
+- `inbox_pressure` backpressure events
+- Audit log daily rotation + retention policy
+- Workflow extras: `RandomTarget`, `NestedSessionTarget` (SocietyOfMind)
+- Adapter state cache perf-regression benchmark suite (CI hygiene)
 - Smoke tests against real LLM providers
-- Examples / playground
-- User-facing docs
+- User-facing docs site, examples / playground
+
+### Lives in `examples/`, never framework-core
+
+These exist to prove the Protocol is genuinely extensible. The maintenance cost belongs with the example, not the framework.
+- `notification`, `broadcast`, `auction` adapters
+- Saga skeleton (composes `Task.checkpoint` + `OnFailure` transitions)
+- Stdlib transform examples (`redact_pii`, `truncate_long_content`, `stamp_audit_header`) — referenced by the `add_send_hook` / `add_receive_hook` cookbook
+
+### Cut
+
+- Auto-shipping pickled transition classes — security smell. Cross-process answer is "both ends deploy the same Python."
+
+### Post Phase 4
+
+Anything beyond the framework-core surface is out of scope for this OSS framework. That includes multi-hub federation, multi-tenancy, managed transform pipelines, archival to external object storage, alternative `KnowledgeStore` backends (Sqlite / Redis / S3 / FoundationDB) for cross-process coordination, JWT / mTLS / signed-challenge auth schemes, HTTP endpoints beyond the basic 10, cross-agent knowledge bridge, and hot-reload rule push beyond the basic `set_rule`.
+
+These belong to a managed deployment layer that builds on framework-core; framework-core stays a tool, not a system.
 
 ## Documents
 

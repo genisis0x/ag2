@@ -72,7 +72,7 @@ class ViewPolicy(Protocol):
 
 `WindowedSummary` is the workhorse for long-running sessions. It composes with framework-core `compact.py` so the same `SummarizeCompact` strategy that compresses an Agent's local history also compresses the session view tail — no duplicate summarisation logic.
 
-`PreviousOnly` (static-pipeline discussions) and `BySpeaker` (filtered-by-speaker view) ship in Phase 2 only on demand. They are short enough that user code can express them via `Composite` until then.
+`PreviousOnly` (static-pipeline discussions) and `BySpeaker` (filtered-by-speaker view) ship in Phase 4 only on demand. They are short enough that user code can express them via `Composite` (Phase 2.1) until then.
 
 `OwnAndDirected` from the original design is just `FullTranscript` over WAL pre-filtered by `visible_to` — no separate policy needed.
 
@@ -106,7 +106,7 @@ Layer C lives entirely in framework-core. An Agent constructed with `knowledge=K
 
 Working memory persists across sessions: what an Agent learned in session A is available in session B because both share the Agent's `KnowledgeStore`.
 
-`scope="knowledge"` reads the **calling agent's own** knowledge — not a shared team store, not peers' stores. Cross-agent knowledge sharing is deferred to AG2 Cloud; an agent that needs another's knowledge opens a session and asks. The tool description makes this explicit so the LLM doesn't assume "knowledge" is shared.
+`scope="knowledge"` reads the **calling agent's own** knowledge — not a shared team store, not peers' stores. Cross-agent knowledge sharing is out of scope for framework-core (post Phase 4); an agent that needs another's knowledge opens a session and asks. The tool description makes this explicit so the LLM doesn't assume "knowledge" is shared.
 
 ## Adapter-default view policies
 

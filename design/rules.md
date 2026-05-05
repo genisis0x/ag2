@@ -89,34 +89,33 @@ Phase 3: HTTP `PUT /v1/agents/{id}/rule` plus `RuleChangedFrame` push over the W
 
 ## Phase 3 additions
 
+Per-envelope tenant logic lands as **two hook points on `AgentClient`**, not a managed pipeline. The hub stays out of it — the trust boundary already says transforms run tenant-side, so they're naturally Python code, not data.
+
 ```python
-class TransformStage(str, Enum):
-    PRE_SEND = "pre_send"
-    POST_SEND = "post_send"
-    PRE_RECEIVE = "pre_receive"
-    POST_RECEIVE = "post_receive"
+class AgentClient:
+    def add_send_hook(
+        self,
+        hook: Callable[[Envelope], Envelope | None],
+    ) -> None:
+        """Register a callable run on every outbound envelope before
+        the hub sees it. Returning ``None`` drops the envelope;
+        returning an ``Envelope`` (possibly the same one) replaces it.
+        Hooks run in registration order."""
 
-
-@dataclass(slots=True)
-class TransformSpec:
-    stage: TransformStage
-    when: dict[str, str] = field(default_factory=dict)
-    apply: str | dict[str, dict]                         # named or {"python": {...}}
-
-
-@dataclass(slots=True)
-class Rule:
-    version: int = 1
-    access: AccessBlock = ...
-    limits: LimitsBlock = ...
-    transforms: list[TransformSpec] = field(default_factory=list)   # added in Phase 3
+    def add_receive_hook(
+        self,
+        hook: Callable[[Envelope], Envelope | None],
+    ) -> None:
+        """Register a callable run on every inbound envelope before
+        the notify handler. Same semantics as ``add_send_hook``."""
 ```
 
-Phase 3 ships:
+Two hook points, no stages, no DSL, no named-transform registry. Common transforms (`redact_pii`, `truncate_long_content`, `stamp_audit_header`) live in `examples/transforms/` as plain functions users copy or import.
 
-- `TransformPipeline` (4 stages, `TransformContext`, atomic rule rebuild)
-- Standard library named transforms: `redact_pii`, `truncate_long_content`, `stamp_audit_header`
-- `RuleChangedFrame` hot-reload
-- `apply` forms: named (`"redact_pii"`) and python (`{"python": {"module": ..., "class": ..., "config": {...}}}`)
-- `when` matcher: `{"event": "ag2.msg.text"}`, `{"session_type": "consulting"}`, AND-combined
-- HTTP / exec / WebSocket sidecar transform forms remain out of scope (AG2 Cloud).
+`Rule` itself stays purely about access + limits — it's data the hub enforces. Hooks are tenant Python; persisting them as data would force a registry and a stages framework, which is the opposite of tools-not-systems.
+
+Also in Phase 3:
+
+- `RuleChangedFrame` push for hot-reload of access / limits over a live connection. Hooks are not part of the push — tenant code reconfigures them directly.
+
+Anything more elaborate — staged pipelines, named-transform registries, exec / HTTP / WebSocket sidecar forms, hot-shipping transform code across hosts — is out of scope (post Phase 4).

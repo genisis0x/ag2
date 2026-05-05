@@ -37,6 +37,7 @@ hub/
     {task_id}/
       metadata.json                     # TaskMetadata
       events.jsonl                      # full Task* event stream (optional; for replay/audit)
+      checkpoint.json                   # Phase 2.0: owner-supplied resume state, written by Task.checkpoint()
 ```
 
 A single `wal.jsonl` per session. If a session grows past a configured size, future versions can chunk into `wal/00001.jsonl` / `wal/00002.jsonl`; V1 does not need this.
@@ -65,7 +66,7 @@ V1 uses only methods already on `main`:
 - `append(path, content) -> int` (returns offset)
 - `read_range(path, start, end | None) -> str`
 
-`on_change` is NOT used by V1. V1 is single-process; the in-memory cache is updated synchronously on every write. Cross-process invalidation is an AG2 Cloud concern.
+`on_change` is NOT used by V1. V1 is single-process; the in-memory cache is updated synchronously on every write. Cross-process invalidation is out of scope for framework-core (post Phase 4).
 
 ## Hub I/O patterns
 
@@ -99,10 +100,19 @@ Every disk write is paired synchronously with the in-memory cache update under t
 | `SqliteKnowledgeStore` | Available in framework-core; not exercised by V1 hub |
 | `RedisKnowledgeStore` | Available in framework-core; not exercised by V1 hub |
 
-The network layer depends only on Memory + Disk in V1. Sqlite / Redis / S3 / FoundationDB backends are AG2 Cloud features for cross-process coordination paths.
+The network layer depends only on Memory + Disk in V1. Sqlite / Redis / S3 / FoundationDB backends are post Phase 4 — they're cross-process coordination paths beyond the framework-core surface.
+
+## Phase 2.0 additions
+
+- `inbox.cursor` becomes load-bearing in-process — the default notify handler advances it on Receipt only after a successful turn; on reconnect (Hello), hub replays unacked envelopes from the cursor up to the WAL head.
+- `tasks/{task_id}/checkpoint.json` — owner-supplied JSON blob written by `Task.checkpoint(state)`. Read on construction by `agent.task(resume_from=task_id)`. Single-writer (the owner); the framework provides storage but never inspects the contents.
 
 ## Phase 3 additions
 
-- `inbox.cursor` becomes load-bearing once the WS transport can drop and replay.
-- An archival sweeper compacts closed sessions to `summary.json` + final `result` and discards the WAL — out of scope for V1.
-- An audit retention policy (rotate after N days, archive to S3) ships when AG2 Cloud lands.
+- Cross-process cursor replay over `WsLink` — the in-process semantics from Phase 2.0 already work over `LocalLink`; Phase 3 exercises them on the wire.
+- `RuleChangedFrame` push for hot-reload of `Rule` over a live connection.
+
+## Phase 4 additions
+
+- Audit retention policy: daily rotation of `audit/{date}.jsonl` and a configurable retention window.
+- Closed-session archival sweeper: compact closed sessions to `summary.json` + final `result` and discard the WAL.

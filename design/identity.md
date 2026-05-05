@@ -223,4 +223,4 @@ default_registry = AuthRegistry([NoAuth()])
 - `dev_registry = AuthRegistry([NoAuth(), ApiKeyAuth()])` — dev convenience that accepts both.
 - Auth runs at the WS `hello` frame and at the HTTP front door.
 
-JWT, mTLS, and signed-challenge schemes are AG2 Cloud features.
+JWT, mTLS, and signed-challenge schemes are post Phase 4 — they're managed-deployment concerns beyond the framework-core surface.

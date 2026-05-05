@@ -6,14 +6,18 @@ This doc is the contract: what failure modes exist, what the framework does abou
 
 ## What the framework guarantees
 
-| Guarantee | Mechanism | V1 status |
+| Guarantee | Mechanism | Phase |
 |---|---|---|
 | **Bounded waits** | Every session has `expires_at`; every task has `expires_at`. Hub TTL sweeper transitions to `EXPIRED` and emits terminal envelopes. | ✅ V1 |
-| **At-least-once delivery** | WAL is durable; receipts checkpoint `inbox.cursor`; on reconnect, hub replays from cursor. | V1: in-process exactly-once by lock. Phase 3: cross-process at-least-once. |
+| **At-least-once delivery** | WAL is durable; receipts checkpoint `inbox.cursor`; on reconnect, hub replays from cursor. | V1: in-process exactly-once by lock. Phase 2.0: in-process redelivery + cursor. Phase 3: cross-process. |
+| **Idempotent reply send** | `Hub.find_envelope_by_causation(session_id, sender_id, causation_id)` returns the prior reply (if any); default handler checks before sending so redelivery doesn't produce duplicate replies. | Phase 2.0 |
+| **Resume signal** | `Hub.pending_turns_for(agent_id)` returns sessions where adapter state expects this agent to act but no reply has landed; default handler calls on reconnect to wake up unfinished turns. | Phase 2.0 |
+| **Checkpoint recovery** | `Task.checkpoint(state)` persists owner-defined JSON to `tasks/{id}/checkpoint.json`; `agent.task(resume_from=task_id)` resumes from the last checkpoint. | Phase 2.0 |
 | **Idle / ack-stall signals** | `acks_within`, `reply_within`, `max_silence` expectations declared on a manifest fire `ag2.expectation.violated` envelopes (or run `audit` / `auto_close` handlers). | ✅ V1 — see `expectations.py` |
+| **Liveness signals** | `turn_within`, `progress_within`, `min_participation` expectations + `warn` / `hide` / `remove` handlers, registered through the V1 expectation registry. | Phase 2.0 |
 | **Peer reachability signals** | Heartbeat-derived `peer.unreachable` / `peer.reconnected` envelopes propagated to active sessions. | Phase 3 — needs WebSocket transport. |
-| **Per-task stall signal** | `task.stalled` when no progress within a per-task threshold. | Phase 2 — per-task `last_progress_at` sweeping. |
-| **Quorum signals** | `session.quorum_changed(remaining, required)` when participant counts change in active multi-party sessions. | Phase 2 — N-of-M quorum tracking. |
+| **Per-task stall signal** | `task.stalled` when no progress within a per-task threshold. | Phase 2.0 — `progress_within` expectation + per-task `last_progress_at` sweeping. |
+| **Quorum signals** | `session.quorum_changed(remaining, required)` when participant counts change in active multi-party sessions. | Phase 2.0 — N-of-M quorum tracking. |
 | **Protocol-shape enforcement** | `SessionManifest.expectations` declared by the adapter author; hub evaluates and applies declared `on_violation` handlers. | ✅ V1 |
 | **Adapter contracts** | `validate_send` rejects malformed sends pre-WAL; `on_accepted` advances state per protocol. | ✅ V1 |
 
@@ -23,7 +27,7 @@ This doc is the contract: what failure modes exist, what the framework does abou
 |---|---|
 | **Reacting to violations / stalls** | Retry? Pick a different peer? Escalate to human? Give up? Choreography decision; only the agent has the goal context. |
 | **Content-quality judgement** | "Did B answer my actual question?" is an LLM evaluation, not a wire concern. |
-| **Idempotency of retried work** | Agents aren't idempotent by default; re-asking is a different operation. App code decides whether retry is meaningful. |
+| **Idempotency of side effects** | The framework dedups *reply envelopes* via `causation_id` query, but the *work* an agent did in response (database writes, external API calls) is not idempotent unless the agent makes it so. App code decides whether re-running is meaningful. |
 | **Saga / compensation** | Build from existing tasks + sessions in app code. Framework-core does not provide a saga engine. |
 | **Multi-session orchestration** | Hub knows one session at a time; coordinating across sessions is the orchestrator pattern we're escaping. |
 
@@ -59,7 +63,7 @@ This doc is the contract: what failure modes exist, what the framework does abou
 
 **V1**: surfaced session-side via `max_silence` expectation if the stalled task is the only thing keeping the session alive. Per-task `ag2.task.stalled` envelopes are **Phase 2** — they require a per-task `last_progress_at` sweeper.
 
-**Agent**: V1 — design tasks with conservative TTLs; `EXPIRED` is the deterministic signal. Phase 2 — react to `ag2.task.stalled` from peers waiting via `tasks(action="wait")`.
+**Agent**: V1 — design tasks with conservative TTLs; `EXPIRED` is the deterministic signal. Phase 2.0 — react to `ag2.task.stalled` from peers waiting via `tasks(action="wait")`.
 
 ### 5. Task expires (TTL)
 
@@ -109,6 +113,16 @@ This doc is the contract: what failure modes exist, what the framework does abou
 
 **Agent**: app-level supervisor restarts the hub; reconnect logic is in `HubClient`. No data loss for committed envelopes (WAL is durable). In-flight `notify`s that hadn't been ack'd are re-delivered via cursor replay.
 
+### 11. Agent process crashes mid-handler
+
+**Symptom**: Agent received `NotifyFrame` for an envelope; handler started but process died before posting a reply.
+
+**V1**: not recovered. The inbound envelope is in WAL but the agent has no record of being mid-handler; on restart it does not auto-resume.
+
+**Phase 2.0**: `inbox.cursor` advances only on successful handler completion (via Receipt). On restart, hub replays unacked envelopes; default handler runs again. The handler's call to `Hub.find_envelope_by_causation(...)` before sending makes the second run idempotent — if the LLM finished but the cursor hadn't advanced, the second run finds the prior reply and posts nothing. For long-running tasks the owner can additionally call `Task.checkpoint(state)`; on restart `agent.task(resume_from=task_id)` reads the last checkpoint and continues from there.
+
+**Agent**: nothing extra for the reply pipeline. Side-effecting work inside the handler (database writes, external API calls) needs its own idempotency strategy — the framework can only dedup the reply envelope.
+
 ## Configuration knobs
 
 V1 keeps the per-tenant `LimitsBlock` deliberately small — only the
@@ -136,7 +150,7 @@ aren't:
 * `reply_within(seconds)` — addressed participant must respond within T.
 * `max_silence(seconds)` — session must see content within T.
 
-Phase 2 adds `turn_within`, `progress_within`, `min_participation`;
+Phase 2.0 adds `turn_within`, `progress_within`, `min_participation`;
 Phase 3 adds peer reachability (which needs the WebSocket transport).
 See [sessions.md](sessions.md) for the full expectation table.
 
@@ -164,6 +178,8 @@ land with their producers; the constants are not exposed until then.
 | Inbox overflow | `InboxFull` raised back to sender | Hub | V1 |
 | Peer disconnected | `ag2.peer.unreachable(peer_id, since)` | Hub | Phase 3 |
 | Peer reconnected | `ag2.peer.reconnected(peer_id)` | Hub | Phase 3 |
-| Task stalled | `ag2.task.stalled(task_id, last_progress_at)` | Hub | Phase 2 |
-| Session quorum changed | `ag2.session.quorum_changed(remaining, required)` | Hub | Phase 2 |
-| Participant removed | `ag2.participant.removed(agent_id, reason)` | Hub | Phase 2 (`remove` violation handler) |
+| Task stalled | `ag2.task.stalled(task_id, last_progress_at)` | Hub | Phase 2.0 |
+| Session quorum changed | `ag2.session.quorum_changed(remaining, required)` | Hub | Phase 2.0 |
+| Participant removed | `ag2.participant.removed(agent_id, reason)` | Hub | Phase 2.0 (`remove` violation handler) |
+| Reply duplicate suppressed | (no envelope; `Hub.find_envelope_by_causation` returns prior reply) | AgentClient default handler | Phase 2.0 |
+| Agent resume on reconnect | `Hub.pending_turns_for` re-fires `_process_text` against the triggering envelope | AgentClient default handler | Phase 2.0 |

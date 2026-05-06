@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from autogen.beta.tools import tool
 
+from ...envelope import EV_TASK_CANCEL_REQUEST, Envelope
 from ..inject import AgentClientInject, TaskInject
 
 if TYPE_CHECKING:
@@ -66,6 +67,7 @@ def make_tasks_tool(agent_client: "AgentClient") -> object:
         payload: dict | None = None,
         result: Any | None = None,
         task_id: str | None = None,
+        reason: str | None = None,
         scope: Literal["own", "all"] = "own",
         state: Literal["active", "all"] = "active",
         timeout: float = 300.0,
@@ -145,8 +147,35 @@ def make_tasks_tool(agent_client: "AgentClient") -> object:
             return f"Error: task {task_id!r} did not complete within {timeout}s"
 
         if action == "cancel":
-            return "Error: tasks(action='cancel') is not implemented"
+            # Phase 2.0: post an ``ag2.task.cancel_request`` envelope to
+            # the owner's session so they can decide whether to honour
+            # it. Cancellation is owner-driven — this verb is only the
+            # peer's request.
+            if not task_id:
+                return "Error: cancel requires `task_id`"
+            try:
+                meta = await hub.get_task(task_id)
+            except Exception:
+                return f"Error: task {task_id!r} not found"
+            if meta.session_id is None:
+                return (
+                    f"Error: task {task_id!r} has no associated session — "
+                    "cancel_request needs a session to deliver into"
+                )
+            envelope = Envelope(
+                session_id=meta.session_id,
+                sender_id=actual.agent_id,
+                audience=[meta.owner_id],
+                event_type=EV_TASK_CANCEL_REQUEST,
+                event_data={"task_id": task_id, "reason": reason or ""},
+                task_id=task_id,
+            )
+            try:
+                await actual.send_envelope(envelope)
+            except Exception as exc:
+                return f"Error: cancel request failed: {exc}"
+            return f"cancel_request posted for {task_id}"
 
-        return f"Error: unknown action {action!r}; choose from progress, complete, list, status, wait"
+        return f"Error: unknown action {action!r}; choose from progress, complete, list, status, wait, cancel"
 
     return tasks

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from autogen.beta.events import (
+    TaskCancelled,
     TaskCompleted,
     TaskExpired,
     TaskFailed,
@@ -137,6 +138,7 @@ class TaskMirror:
             stream.where(TaskCompleted).subscribe(self._on_completed, sync_to_thread=False),
             stream.where(TaskFailed).subscribe(self._on_failed, sync_to_thread=False),
             stream.where(TaskExpired).subscribe(self._on_expired, sync_to_thread=False),
+            stream.where(TaskCancelled).subscribe(self._on_cancelled, sync_to_thread=False),
         ]
 
     def detach(self, stream: "Stream", sub_ids: list[object]) -> None:
@@ -205,6 +207,20 @@ class TaskMirror:
         except Exception:
             pass
         await self._record_observation_if_tagged(event.task_id, TaskState.EXPIRED)
+
+    async def _on_cancelled(self, event: TaskCancelled) -> None:
+        """Phase 2.0: mirror an owner cancellation to the hub."""
+        try:
+            await self._update(
+                event.task_id,
+                state=TaskState.CANCELLED,
+                error=event.reason or "cancelled",
+            )
+        except NotFoundError:
+            pass
+        except Exception:
+            pass
+        await self._record_observation_if_tagged(event.task_id, TaskState.CANCELLED)
 
     async def _record_observation_if_tagged(self, task_id: str, outcome: TaskState) -> None:
         """If the task's spec carried a ``capability`` tag, push the

@@ -24,7 +24,14 @@ from uuid import uuid4
 
 from .annotations import Inject
 from .context import ConversationContext
-from .events import TaskCompleted, TaskExpired, TaskFailed, TaskProgress, TaskStarted
+from .events import (
+    TaskCancelled,
+    TaskCompleted,
+    TaskExpired,
+    TaskFailed,
+    TaskProgress,
+    TaskStarted,
+)
 from .stream import MemoryStream
 
 __all__ = (
@@ -49,12 +56,14 @@ class TaskState(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     EXPIRED = "expired"
+    CANCELLED = "cancelled"  # Phase 2.0
 
 
 TERMINAL_TASK_STATES: frozenset[TaskState] = frozenset({
     TaskState.COMPLETED,
     TaskState.FAILED,
     TaskState.EXPIRED,
+    TaskState.CANCELLED,
 })
 
 
@@ -319,6 +328,33 @@ class Task:
                 task_id=self._metadata.task_id,
                 agent_name=self._owner_id,
                 objective=self._spec.title,
+            )
+        )
+
+    async def cancel(self, reason: str = "") -> None:
+        """Phase 2.0 terminal: emit ``TaskCancelled``; state ← CANCELLED.
+
+        Owner-driven termination. Different from ``fail`` (raised
+        exception) and ``expire`` (TTL): cancellation is a deliberate
+        choice, typically in response to a peer's
+        ``ag2.task.cancel_request`` envelope or app-level decision.
+
+        No-op if already terminal — once a task has completed / failed
+        / expired, cancel arrives too late.
+        """
+        if self._metadata is None:
+            raise RuntimeError("Task.cancel() called before __aenter__")
+        if self._metadata.state in TERMINAL_TASK_STATES:
+            return
+        self._metadata.state = TaskState.CANCELLED
+        self._metadata.error = reason or self._metadata.error or "cancelled"
+        self._metadata.completed_at = _now_iso()
+        await self.context.send(
+            TaskCancelled(
+                task_id=self._metadata.task_id,
+                agent_name=self._owner_id,
+                objective=self._spec.title,
+                reason=reason,
             )
         )
 

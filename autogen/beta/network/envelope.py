@@ -24,6 +24,8 @@ __all__ = (
     "EV_SESSION_INVITE_ACK",
     "EV_SESSION_INVITE_REJECT",
     "EV_SESSION_OPENED",
+    "EV_TASK_CANCELLED",
+    "EV_TASK_CANCEL_REQUEST",
     "EV_TEXT",
     "Envelope",
     "Priority",
@@ -55,6 +57,15 @@ EV_SESSION_CLOSED = "ag2.session.closed"
 EV_SESSION_EXPIRED = "ag2.session.expired"
 
 EV_EXPECTATION_VIOLATED = "ag2.expectation.violated"
+
+# Phase 2.0 task cancellation:
+# * ``EV_TASK_CANCEL_REQUEST`` — peer asks the owner to cancel a task.
+#   ``event_data`` carries ``{"task_id": str, "reason": str}``. Owners
+#   are free to honour or ignore — cancellation is owner-driven.
+# * ``EV_TASK_CANCELLED`` — terminal task event mirrored from the
+#   owner's stream. Carries ``{"task_id": str, "reason": str}``.
+EV_TASK_CANCEL_REQUEST = "ag2.task.cancel_request"
+EV_TASK_CANCELLED = "ag2.task.cancelled"
 
 # Idle-detection rides on ``max_silence`` expectations; task lifecycle is
 # mirrored as Python events on the agent's own stream

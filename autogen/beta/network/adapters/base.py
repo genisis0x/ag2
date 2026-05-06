@@ -104,3 +104,22 @@ class SessionAdapter(Protocol):
     ) -> ViewPolicy:
         """Per-participant default projection for this session type."""
         ...
+
+
+# ``dispatch_audience`` is an optional method adapters may implement.
+# The hub probes for it via ``getattr`` rather than declaring it on the
+# Protocol so existing concrete adapters don't need a no-op stub. When
+# present, it must have the signature::
+#
+#     def dispatch_audience(
+#         self,
+#         envelope: Envelope,
+#         metadata: SessionMetadata,
+#         state: AdapterState,
+#     ) -> list[str] | None: ...
+#
+# Return a list of recipient agent_ids to narrow delivery, or ``None``
+# to fall back to the default (``envelope.audience`` or all participants
+# except the sender). The hook only fires for substantive events; the
+# session protocol envelopes (invite / ack / reject / open / close /
+# expire) follow their own routing rules in the hub.

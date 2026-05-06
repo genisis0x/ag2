@@ -79,12 +79,15 @@ from ..transport.frames import (
     ErrorFrame,
     Frame,
     HelloFrame,
+    NetworkChangedFrame,
     NotifyFrame,
     PingFrame,
     PongFrame,
+    ReceiptFrame,
     SendFrame,
     WelcomeFrame,
 )
+from ..envelope import visible_to
 from ..transport.link import LinkEndpoint
 from ..views.base import ViewPolicy
 from .audit import (
@@ -112,6 +115,8 @@ from .expectations import (
 from .layout import (
     agents_root,
     by_capability_path,
+    inbox_cursor_path,
+    inbox_nacks_path,
     passport_path,
     resume_path,
     rule_path,
@@ -291,6 +296,16 @@ class Hub:
         # a transport with ack frames.
         self._inbox_pending: dict[str, int] = {}
 
+        # Per-(agent, session) inbox cursor: the highest-acked
+        # envelope_id this agent has confirmed delivery for. Populated
+        # on ``ReceiptFrame(status="ack")``; persisted write-through to
+        # ``inbox.cursor`` so a hub restart preserves replay semantics.
+        # On ``HelloFrame`` reconnect, the hub walks each active session
+        # the agent participates in and replays envelopes past the
+        # cursor; ``find_envelope_by_causation`` makes redelivery
+        # idempotent. Read-once on ``hydrate()``.
+        self._inbox_cursors: dict[str, dict[str, str]] = {}
+
         # Transport-side state.
         self._endpoints_by_id: dict[str, LinkEndpoint] = {}
         self._agent_to_endpoint: dict[str, str] = {}
@@ -377,6 +392,7 @@ class Hub:
         self._removed_from_session.clear()
         self._tasks.clear()
         self._session_tasks.clear()
+        self._inbox_cursors.clear()
 
         # Identities.
         agent_children = await self._store.list(agents_root())
@@ -602,6 +618,7 @@ class Hub:
             "agent_id": agent_id,
             "name": passport.name,
         })
+        await self._broadcast_network_changed("agent_registered", agent_id)
         return passport
 
     async def unregister(self, agent_id: str) -> None:
@@ -644,10 +661,12 @@ class Hub:
             await self._store.delete(resume_path(agent_id))
             await self._store.delete(rule_path(agent_id))
             await self._store.delete(skill_path(agent_id))
+            await self._store.delete(inbox_cursor_path(agent_id))
 
             # Drop inbox accounting so a future re-register with a
             # different agent_id starts from zero.
             self._inbox_pending.pop(agent_id, None)
+            self._inbox_cursors.pop(agent_id, None)
 
         await self._persist_capability_index()
         await self._audit_log.append({
@@ -656,6 +675,7 @@ class Hub:
             "agent_id": agent_id,
             "name": passport.name if passport is not None else None,
         })
+        await self._broadcast_network_changed("agent_unregistered", agent_id)
 
     # ── Discovery (read-side) ────────────────────────────────────────────────
 
@@ -756,6 +776,7 @@ class Hub:
             "agent_id": agent_id,
             "version": resume.version,
         })
+        await self._broadcast_network_changed("resume_set", agent_id)
 
     async def set_skill(self, agent_id: str, skill_md: str | None) -> None:
         if agent_id not in self._passports:
@@ -772,6 +793,7 @@ class Hub:
             "agent_id": agent_id,
             "removed": skill_md is None,
         })
+        await self._broadcast_network_changed("skill_set", agent_id)
 
     async def set_rule(self, agent_id: str, rule: Rule) -> None:
         if agent_id not in self._passports:
@@ -854,6 +876,7 @@ class Hub:
             "capability": capability,
             "outcome": outcome.value,
         })
+        await self._broadcast_network_changed("resume_set", owner_id)
 
     def agents_with_capability(self, capability: str) -> list[str]:
         """Return agent_ids matching ``capability`` (claimed or observed)."""
@@ -1556,8 +1579,26 @@ class Hub:
         by_session[(envelope.sender_id, envelope.causation_id)] = envelope
 
     async def _dispatch(self, envelope: Envelope, metadata: SessionMetadata) -> None:
-        """Send NotifyFrames to the audience (or all participants if broadcast)."""
-        if envelope.audience is None:
+        """Send NotifyFrames to the audience (or all participants if broadcast).
+
+        Adapters may narrow the audience via the optional
+        ``dispatch_audience`` hook — used by ``WorkflowAdapter`` to
+        skip wire round-trips for participants who aren't the next
+        speaker. The hook is ``getattr``'d so adapters that don't
+        implement it (consulting / conversation / discussion) keep
+        the broadcast default.
+        """
+        adapter = self._adapters.get((metadata.manifest.type, metadata.manifest.version))
+        override: list[str] | None = None
+        if adapter is not None:
+            hook = getattr(adapter, "dispatch_audience", None)
+            if hook is not None:
+                state = self._adapter_states.get(envelope.session_id)
+                override = hook(envelope, metadata, state)
+
+        if override is not None:
+            recipients = list(override)
+        elif envelope.audience is None:
             recipients = [p.agent_id for p in metadata.participants if p.agent_id != envelope.sender_id]
         else:
             recipients = list(envelope.audience)
@@ -1616,10 +1657,94 @@ class Hub:
                 await endpoint.send_frame(ErrorFrame(code=_error_code(exc), message=str(exc)))
                 return
             await endpoint.send_frame(WelcomeFrame(endpoint_id=endpoint.endpoint_id, hub_time=self._clock()))
+            # Reconnect replay: fresh notifies for every envelope past
+            # this agent's per-session cursor. Idempotent on the handler
+            # side via ``find_envelope_by_causation``; LocalLink hits
+            # this path too but the cursor is empty for in-process
+            # registrations so the walk is a no-op.
+            await self._replay_inbox(agent_id, endpoint)
         elif isinstance(frame, PingFrame):
             await endpoint.send_frame(PongFrame())
         elif isinstance(frame, ChunkFrame):
             await self._dispatch_chunk(frame)
+        elif isinstance(frame, ReceiptFrame):
+            await self._handle_receipt(endpoint, frame)
+
+    async def _handle_receipt(self, endpoint: LinkEndpoint, frame: ReceiptFrame) -> None:
+        """Update the per-(agent, session) cursor on ack; nack appends
+        to ``inbox_nacks.jsonl`` for diagnostics.
+
+        Only acts on receipts from a bound endpoint — an unbound
+        endpoint can't own a cursor anyway.
+        """
+        agent_id = endpoint.agent_id
+        if agent_id is None:
+            return
+        if frame.status == "ack":
+            cursor_map = self._inbox_cursors.setdefault(agent_id, {})
+            cursor_map[frame.session_id] = frame.envelope_id
+            await self._persist_inbox_cursor(agent_id)
+        elif frame.status == "nack":
+            entry = {
+                "envelope_id": frame.envelope_id,
+                "session_id": frame.session_id,
+                "reason": frame.reason,
+                "at": self._clock(),
+            }
+            await self._store.append(inbox_nacks_path(agent_id), json.dumps(entry) + "\n")
+
+    async def _broadcast_network_changed(self, change: str, agent_id: str) -> None:
+        """Push a ``NetworkChangedFrame`` to every bound endpoint.
+
+        Cheap fan-out: one frame per identity mutation, regardless of
+        how many sessions or capability buckets are touched. Bound
+        endpoints only — an unbound endpoint hasn't claimed an identity
+        and has nothing to invalidate.
+
+        Failures on individual endpoints are swallowed so a single
+        broken connection doesn't abort the broadcast for everyone
+        else; the next push or the safety-net cache TTL on the client
+        will catch up the laggard.
+        """
+        frame = NetworkChangedFrame(change=change, agent_id=agent_id)
+        for endpoint in list(self._endpoints_by_id.values()):
+            if endpoint.agent_id is None:
+                continue
+            with contextlib.suppress(Exception):
+                await endpoint.send_frame(frame)
+
+    async def _replay_inbox(self, agent_id: str, endpoint: LinkEndpoint) -> None:
+        """Re-deliver unacked notifies from every active session this
+        agent participates in.
+
+        Walks each session's WAL, skips envelopes up to and including
+        the saved cursor, and re-fans envelopes visible to this agent
+        as fresh ``NotifyFrame``s. Substantive events only — protocol
+        bookkeeping (invite/ack/open/close) is replayed too for
+        completeness; the default handler's idempotent paths absorb
+        duplicates.
+        """
+        cursor_map = self._inbox_cursors.get(agent_id, {})
+        for session_id, metadata in self._active_sessions.items():
+            if metadata.state != SessionState.ACTIVE:
+                continue
+            if agent_id not in (p.agent_id for p in metadata.participants):
+                continue
+            cursor = cursor_map.get(session_id)
+            wal = await self.read_wal(session_id)
+            past_cursor = cursor is None
+            for envelope in wal:
+                if not past_cursor:
+                    if envelope.envelope_id == cursor:
+                        past_cursor = True
+                    continue
+                if envelope.sender_id == agent_id:
+                    continue
+                if not visible_to(envelope, agent_id):
+                    continue
+                await endpoint.send_frame(
+                    NotifyFrame(envelope=envelope, recipient_id=agent_id)
+                )
 
     async def dispatch_chunk(self, chunk: ChunkFrame) -> None:
         """Public chunk dispatch.
@@ -1881,6 +2006,20 @@ class Hub:
             json.dumps(sorted(bucket)),
         )
 
+    async def _persist_inbox_cursor(self, agent_id: str) -> None:
+        """Write-through persistence of ``inbox.cursor``.
+
+        Receipt cadence at chat-style envelope rates is low; one tiny
+        JSON write per ack is below the noise floor of any storage
+        backend that matters. Revisit only if a real workload shows
+        otherwise.
+        """
+        cursor_map = self._inbox_cursors.get(agent_id, {})
+        await self._store.write(
+            inbox_cursor_path(agent_id),
+            json.dumps(cursor_map, sort_keys=True),
+        )
+
     async def _persist_task_metadata(self, metadata: TaskMetadata) -> None:
         await self._store.write(
             task_metadata_path(metadata.task_id),
@@ -1904,6 +2043,19 @@ class Hub:
             self._rules[agent_id] = Rule.from_dict(json.loads(rule_data))
         else:
             self._rules[agent_id] = Rule()
+
+        cursor_data = await self._store.read(inbox_cursor_path(agent_id))
+        if cursor_data:
+            try:
+                cursor_map = json.loads(cursor_data)
+            except json.JSONDecodeError:
+                cursor_map = {}
+            if isinstance(cursor_map, dict):
+                self._inbox_cursors[agent_id] = {
+                    str(sid): str(eid)
+                    for sid, eid in cursor_map.items()
+                    if isinstance(sid, str) and isinstance(eid, str)
+                }
 
     async def _load_session(self, session_id: str) -> None:
         metadata_data = await self._store.read(session_metadata_path(session_id))

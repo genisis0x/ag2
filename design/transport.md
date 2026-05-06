@@ -53,7 +53,8 @@ V1 ships one `LinkClient` implementation: `LocalLinkClient`. Phase 3 adds `WsLin
 | `unsubscribe` | client → hub | Close subscription | yes |
 | `event` | hub → client | Subscription delivery | yes |
 | `chunk` | both | Streaming token (transient, not persisted to WAL) | yes |
-| `rule_changed` | hub → client | Push updated rule (transforms portion) | Phase 3 |
+| `network_changed` | hub → client | Cache-invalidation push for peer/capability lookups | Phase 3 |
+| `rule_changed` | hub → client | Push updated rule (transforms portion) | post-V1 |
 
 Frames are dataclasses in `autogen/beta/network/transport/frames.py` with `to_dict` / `from_dict` round-trip. JSON-line wire encoding when serialised.
 
@@ -90,15 +91,28 @@ These run over `LocalLink` for V1 in-process; Phase 3 exercises the same semanti
 Same `Link` Protocol, WebSocket-backed. Adds:
 
 - `hello` / `welcome` includes auth claim validation
-- `subscribe` carries a `since` cursor for at-least-once redelivery (see [hub.md](hub.md))
-- `chunk` frames stream over a separate WS subprotocol channel
-- Reconnect with cursor replay: queue identity is preserved across rotation so callers (`Session.ask`, `Session.subscribe`) hold the same async iterator across reconnects
+- `chunk` frames ride the existing connection as JSON frames (no separate subprotocol — the implementation found no reason for one)
 
-Reconnect flow:
+### Reconnect with cursor replay
 
-1. Re-open the connection, exchange `hello` / `welcome`.
-2. For each live subscription, rotate `subscription_id`, re-send `subscribe` with the saved `since` cursor.
-3. Hub replays envelopes that landed during the drop, then resumes live push.
+`HelloFrame` is the reconnect anchor. The hub keeps a per-agent `inbox.cursor` (the highest-acked envelope position) and replays everything past it on each successful `hello`/`welcome` exchange.
+
+1. Client (re-)opens the WebSocket and sends `HelloFrame(name=...)`.
+2. Hub binds the endpoint to the existing `agent_id`, sends `WelcomeFrame`, then replays unacked notifies as fresh `NotifyFrame`s in WAL order.
+3. `find_envelope_by_causation` makes redelivery idempotent on the handler side — duplicate replies are the dedup short-circuit, not the application's problem.
+
+Receipts are wired on every transport (including `LocalLink`) for code-path uniformity, but `LocalLink` has no reconnect event so the replay path is exercised on `WsLink` only.
+
+`SubscribeFrame.since_envelope_id`-based replay is **not** wired in M3 — the subscribe/event surface isn't a load-bearing client concern yet, and Hello-driven replay covers the resume story. Re-open if subscribe semantics grow.
+
+### NetworkChangedFrame
+
+Peer/capability lookups (`list_agents`, `get_resume`, `get_skill`) become real round-trips when the link crosses processes. `NetworkChangedFrame(kind, agent_id)` is a hub-pushed cache-invalidation signal:
+
+* `kind`: `agent_registered` | `agent_unregistered` | `resume_set` | `skill_set`
+* `agent_id`: the affected identity
+
+`HubClient` keeps a small TTL'd cache around the discovery passthroughs and invalidates on inbound `NetworkChangedFrame`. `NetworkContextPolicy` is unchanged — it doesn't depend on peer state today.
 
 ## Phase 3 — HTTP surface
 

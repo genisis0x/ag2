@@ -166,19 +166,44 @@ class AgentClient:
         drops the envelope entirely (no inbox put, no handler
         invocation); the WAL still has the original because hooks run
         client-side after hub-side persistence.
+
+        Acks back to the hub after the handler returns successfully so
+        a wire reconnect doesn't replay this delivery. Drops on a
+        receive-hook short-circuit are also acked — the tenant chose
+        to discard, that's a decision, not a missed delivery. Handler
+        exceptions skip the ack so the next reconnect re-delivers.
         """
         for hook in self._receive_hooks:
             result = await hook(envelope)
             if result is None:
+                await self._ack(envelope)
                 return
             envelope = result
         inbox = self._session_inboxes.get(envelope.session_id)
         if inbox is not None:
             await inbox.put(envelope)
         if envelope.session_id in self._handler_suppressed_sessions:
+            await self._ack(envelope)
             return
         if self._on_envelope is not None:
             await self._on_envelope(envelope)
+        await self._ack(envelope)
+
+    async def _ack(self, envelope: Envelope) -> None:
+        """Send a ``ReceiptFrame(status="ack")`` back to the hub.
+
+        Skipped when the envelope has no ``envelope_id`` (synthetic /
+        in-test deliveries) or when the link isn't reachable — the
+        cursor only matters when there's a wire transport that can
+        drop, and missing acks just mean the next reconnect re-delivers.
+        """
+        if not envelope.envelope_id:
+            return
+        await self._hub_client._send_receipt(
+            envelope_id=envelope.envelope_id,
+            session_id=envelope.session_id,
+            status="ack",
+        )
 
     def on_envelope(self, callback: EnvelopeHandler) -> None:
         """Override the default notify handler with a custom callback.

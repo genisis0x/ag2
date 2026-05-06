@@ -26,6 +26,7 @@ __all__ = (
     "EventFrame",
     "Frame",
     "HelloFrame",
+    "NetworkChangedFrame",
     "NotifyFrame",
     "PingFrame",
     "PongFrame",
@@ -133,14 +134,17 @@ class NotifyFrame:
 class ReceiptFrame:
     """client → hub: ack or nack a ``notify``.
 
-    ``status`` is ``"ack"`` (advances the cross-process ``inbox.cursor``
-    when the transport supports replay) or ``"nack"`` (records to
-    ``inbox_nacks.jsonl``). ``reason`` is a free-form diagnostic for
-    the audit log.
+    ``status`` is ``"ack"`` (advances the per-(agent, session)
+    ``inbox.cursor`` so a wire reconnect doesn't replay this delivery)
+    or ``"nack"`` (records to ``inbox_nacks.jsonl``). ``session_id``
+    keys the cursor map; the client always knows it because the inbound
+    envelope it's acking carries it. ``reason`` is a free-form
+    diagnostic for the audit log.
     """
 
     kind: ClassVar[str] = "receipt"
     envelope_id: str
+    session_id: str
     status: str  # "ack" | "nack"
     reason: str = ""
 
@@ -213,6 +217,28 @@ class ChunkFrame:
     recipient_id: str = ""
 
 
+@dataclass(slots=True)
+class NetworkChangedFrame:
+    """hub → client: identity mutation happened; clients should invalidate
+    cached discovery results.
+
+    ``kind`` is one of ``"agent_registered"``, ``"agent_unregistered"``,
+    ``"resume_set"``, ``"skill_set"``. ``agent_id`` identifies the
+    affected identity. The frame carries no payload — the convention
+    is that on receipt, clients drop their peer / capability caches and
+    re-fetch lazily on the next discovery call. Cheap to broadcast
+    (one frame per identity mutation) and cheap to consume (a dict
+    clear). Hub broadcasts to every bound endpoint regardless of
+    which connection initiated the mutation; the originator's own
+    cache stays consistent because it usually hasn't started caching
+    yet (mutation precedes discovery).
+    """
+
+    kind: ClassVar[str] = "network_changed"
+    change: str
+    agent_id: str
+
+
 Frame: TypeAlias = (
     HelloFrame
     | WelcomeFrame
@@ -227,6 +253,7 @@ Frame: TypeAlias = (
     | UnsubscribeFrame
     | EventFrame
     | ChunkFrame
+    | NetworkChangedFrame
 )
 
 
@@ -244,6 +271,7 @@ _FRAME_CLASSES: dict[str, type] = {
     "unsubscribe": UnsubscribeFrame,
     "event": EventFrame,
     "chunk": ChunkFrame,
+    "network_changed": NetworkChangedFrame,
 }
 
 

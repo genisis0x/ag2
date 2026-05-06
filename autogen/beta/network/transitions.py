@@ -43,6 +43,7 @@ __all__ = (
     "AgentTarget",
     "Always",
     "FromSpeaker",
+    "LLMSelectorTarget",
     "RevertToInitiatorTarget",
     "RoundRobinTarget",
     "StayTarget",
@@ -177,6 +178,36 @@ class TerminateTarget:
         return TransitionDecision(next_speaker=None, close_reason=self.reason)
 
 
+@dataclass(slots=True)
+class LLMSelectorTarget:
+    """Phase 2.0: route the next turn to an LLM-driven selector.
+
+    The AG2-classic ``AutoPattern`` equivalent. Resolves to
+    ``selector_id`` so that agent's notify handler engages its LLM;
+    candidate selection happens via the selector calling a handoff
+    tool (an ``ag2.handoff`` envelope), which a paired
+    :class:`ToolCalled` transition then routes to the chosen
+    candidate.
+
+    ``candidates`` is informational — the framework doesn't enforce
+    that the selector picks from this list. It exists so a graph
+    serialised across processes can be inspected (``graph.dumps()``)
+    and so :meth:`TransitionGraph.auto_pattern` can wire the matching
+    handoff transitions automatically.
+
+    Pure resolver — no async resolution, no I/O. The selector's
+    deliberation happens during their normal LLM turn; the framework
+    only picks where to *route*, not what to *think*.
+    """
+
+    selector_id: str
+    candidates: list[str] = field(default_factory=list)
+    name: ClassVar[str] = "llm_selector"
+
+    def resolve(self, state: "WorkflowState", envelope: Envelope) -> TransitionDecision:
+        return TransitionDecision(next_speaker=self.selector_id)
+
+
 # ── Built-in TransitionConditions ───────────────────────────────────────────
 
 
@@ -224,6 +255,7 @@ _BUILTIN_TARGETS: tuple[type[TransitionTarget], ...] = (
     StayTarget,
     RevertToInitiatorTarget,
     TerminateTarget,
+    LLMSelectorTarget,
 )
 
 _BUILTIN_CONDITIONS: tuple[type[TransitionCondition], ...] = (
@@ -394,6 +426,57 @@ class TransitionGraph:
             transitions=transitions,
             default_target=TerminateTarget(reason="sequence_complete"),
             max_turns=len(steps),
+        )
+
+    @classmethod
+    def auto_pattern(
+        cls,
+        selector_id: str,
+        candidates: list[str],
+        *,
+        handoff_tools: dict[str, str] | None = None,
+        max_turns: int | None = None,
+    ) -> "TransitionGraph":
+        """Phase 2.0: AG2-classic ``AutoPattern`` equivalent.
+
+        Wires a selector + candidates into a graph that:
+
+        * Starts with the selector (``initial_speaker=selector_id``).
+        * Routes back to the selector after every candidate's turn
+          (so the selector can pick again).
+        * On each ``ag2.handoff`` envelope from the selector with
+          tool name matching ``handoff_tools[candidate]``, routes to
+          that candidate.
+
+        ``handoff_tools`` defaults to ``{candidate: f"transfer_to_{candidate}"}``
+        for every candidate. Override the mapping when the selector's
+        existing tool surface uses different names. The handoff tool
+        themselves are materialised by ``NetworkPlugin.register_workflow``
+        — this factory only builds the routing data.
+        """
+        if not candidates:
+            raise WorkflowGraphError("auto_pattern requires at least 1 candidate")
+        tools = (
+            handoff_tools
+            if handoff_tools is not None
+            else {agent_id: f"transfer_to_{agent_id}" for agent_id in candidates}
+        )
+        transitions: list[Transition] = []
+        # Selector → candidate routes via tool calls.
+        for candidate, tool_name in tools.items():
+            transitions.append(
+                Transition(when=ToolCalled(tool_name), then=AgentTarget(candidate))
+            )
+        # Candidate replies route back to the selector for the next pick.
+        for candidate in candidates:
+            transitions.append(
+                Transition(when=FromSpeaker(candidate), then=AgentTarget(selector_id))
+            )
+        return cls(
+            initial_speaker=selector_id,
+            transitions=transitions,
+            default_target=TerminateTarget(reason="selector_terminated"),
+            max_turns=max_turns,
         )
 
 

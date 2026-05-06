@@ -74,6 +74,7 @@ from .errors import (
     NotFoundError,
     ProtocolError,
 )
+from .migration import UnsupportedPatternError, from_classic_pattern
 from .hub import (
     AUDIT_KIND_AGENT_REGISTERED,
     AUDIT_KIND_AGENT_UNREGISTERED,
@@ -206,6 +207,8 @@ __all__ = (
     "ORDERING_ROUND_ROBIN",
     "RESUME_SOURCE_OBSERVED",
     "RESUME_SOURCE_TENANT",
+    "UnsupportedPatternError",
+    "from_classic_pattern",
     "SESSION_DEP",
     "TASK_DEP",
     "WORKFLOW_TYPE",

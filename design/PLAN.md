@@ -282,29 +282,42 @@ Exit: ✅ Validated by 26 in-tree integration tests in `test/beta/network/test_m
 
 See [workflow.md](workflow.md) for the full design.
 
-### Phase 2.0 — Durability and adoption
+### Phase 2.0 — Durability and adoption ✅ shipped
 
 The unmet need: long-running sessions and workflows that survive interruption and resume without starting over. AG2-classic's `GroupChat` can't do this natively; users have asked for it repeatedly. V1 ships durable WAL + deterministic fold, so the hub-side state already survives restart — the gap is the agent-side activation mechanism.
 
 Phase 2.0 closes that gap with **primitives, not a system**. Each item is a method or a vocabulary entry; default handlers compose them into useful behavior; users override the handlers if they want different semantics. **No new protocol shape**: the WAL stays append-only, adapters stay stateless, fold stays pure.
 
+| Commit | Theme | Tests added |
+|---|---|---|
+| `eb7251890cb` | Durability foundation | 13 |
+| `d4fffb63070` | Expectations + violation handlers | 8 |
+| `d66289ffcb8` | Task cancellation | 6 |
+| `a8156de6373` | N-of-M quorum tracking | 5 |
+| `e835e8e259f` | LLMSelectorTarget + classic Pattern migration | 12 |
+
+Beta suite total: **1637 passing**, +44 from V1 baseline, zero regressions across the 5 implementation commits.
+
 **Durability primitives:**
-- `inbox.cursor` — durable per-agent read position. Receipt frames advance it on successful handler completion. Transport replays unacked envelopes on Hello.
-- `Hub.find_envelope_by_causation(session_id, sender_id, causation_id) -> Envelope | None` — idempotency query. Default handler checks before sending replies; redelivery doesn't produce duplicates. Index rebuilt by walking WAL on `hydrate()`.
+- `Hub.find_envelope_by_causation(session_id, *, sender_id, causation_id) -> Envelope | None` — idempotency query. Default handler checks before sending replies; redelivery doesn't produce duplicates. Index rebuilt by walking WAL on `hydrate()`.
 - `Hub.pending_turns_for(agent_id) -> list[PendingTurn]` — wake-up query. Returns sessions where adapter state expects this agent to act but no reply has landed. Default handler calls on reconnect and re-runs the existing `_process_text` path against the triggering envelope. **Same code path as live notifies** — no resume-specific branch in user-visible code.
-- `Task.checkpoint(state: dict)` — opt-in framework-core primitive. Persists JSON to `tasks/{id}/checkpoint.json`. `agent.task(resume_from=task_id)` reads it on construction. The owner chooses what to checkpoint and when; the framework provides storage.
+- `HubClient.attach(agent, name=...)` + `AgentClient.resume_pending_turns()` — reconnect to an existing identity by name and re-fire the registered handler against any unfinished triggers.
+- `Task.checkpoint(state: dict)` — opt-in framework-core primitive. Persists JSON to `tasks/{id}/checkpoint.json` via the supplied `CheckpointStore`. `agent.task(resume_from=task_id)` reads it on construction. The owner chooses what to checkpoint and when; the framework provides storage.
+- `HubBackedCheckpointStore` + `AgentClient.checkpoint_store` — hub-backed `CheckpointStore` adapter so network agents get durable task state for free.
+
+`inbox.cursor` + Receipt wiring was scoped out of 2.0 — `pending_turns_for` is the in-process semantic primitive that solves the agent-restart case, and cursor-driven replay only earns its keep when transports can drop and replay (Phase 3 cross-process).
 
 **Liveness expectations** (registered through the existing `register_expectation_evaluator` registry — no new infrastructure):
 - 3 evaluators: `turn_within`, `progress_within`, `min_participation`
-- 3 violation handlers: `warn`, `hide`, `remove`
+- 3 violation handlers: `warn`, `hide`, `remove`. `hide` is in-memory; `remove` persists to `sessions/{id}/removed.json` so the bar survives hub restart.
 
 **Other primitives:**
-- `TaskState.CANCELLED` + `task.cancel(reason)` — owner-driven, plus `EV_TASK_CANCELLED` and `ag2.task.cancel_request` (peer asks; owner free to honour or ignore).
-- N-of-M quorum tracking — `required_acks` integer, partial-quorum recomputation, `ag2.session.quorum_changed` events.
-- `LLMSelectorTarget` — workflow transition target that opens a sub-consulting session to pick the next speaker. The AG2-classic `AutoPattern` equivalent.
-- Classic `Pattern` → `WorkflowGraph` migration helper — drop-in adoption path for users moving off `GroupChat` + `Handoffs` + `AfterWork`.
+- `TaskState.CANCELLED` + `Task.cancel(reason)` — owner-driven; emits `TaskCancelled`. `EV_TASK_CANCELLED` mirrors terminal state; `ag2.task.cancel_request` is the peer-side ask (owner free to honour or ignore). `tasks(action="cancel", task_id, reason)` LLM verb posts the request envelope.
+- N-of-M quorum tracking — `required_acks: int | None`. `None` keeps V1 all-or-nothing semantics; positive integer activates as soon as N acks land. Rejects only fail with `quorum_unreachable` when the threshold becomes unreachable. `mark_removed` on an active session emits `ag2.session.quorum_changed(remaining, required)`.
+- `LLMSelectorTarget(selector_id, candidates=[])` — workflow transition target that routes to a selector agent who then picks via tool-call handoff. Pure synchronous resolver — the selector's LLM deliberation happens during their normal turn; the framework only routes. `TransitionGraph.auto_pattern(selector_id, candidates, handoff_tools=...)` factory wires the full selector + candidate routing in one call.
+- `from_classic_pattern(pattern, *, selector_id?, ...)` — translates AG2-classic `RoundRobinPattern` and `AutoPattern` into the equivalent `TransitionGraph`. Other classic patterns raise `UnsupportedPatternError` with a phase pointer (RandomPattern → Phase 4, ManualPattern → post Phase 4, DefaultPattern → Phase 2.1).
 
-**Hygiene** (tools-not-systems): sweeper hooks promoted to first-class methods (`Hub.expire_due()` already public; rename internal `_expectation_tick` to public `Hub.evaluate_expectations()`) so users running their own scheduler don't reach into privates.
+**Hygiene** (tools-not-systems): `_expectation_tick` promoted to public `Hub.evaluate_expectations()` so users running their own scheduler don't reach into privates. `Hub.get_rule(agent_id)` / `Hub.mark_hidden` / `Hub.mark_removed` exposed for the same reason.
 
 ### Phase 2.1 — Sugar
 

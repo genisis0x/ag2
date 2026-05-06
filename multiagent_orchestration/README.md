@@ -30,6 +30,7 @@ default to `gemini-3-flash-preview` (fast, cheap). Override with
 | 2 | sequential handoffs (`set_after_work` chain) | `TransitionGraph.sequence([...])`     | `test_sequential.py`   |
 | 3 | swarm via `OnCondition` handoffs | `ToolCalled` + `RevertToInitiatorTarget`        | `test_swarm_handoff.py`|
 | 4 | `AutoPattern` (manager picks)    | manager-as-initiator + `RevertToInitiatorTarget`| `test_auto_manager.py` |
+| 5 | raw `GroupChat(speaker_selection_method=callable)` | user-registered `TransitionCondition` (`TextContains`) via `register_condition` | `test_custom_handoff.py` |
 
 Each test file is also runnable as a script for ad-hoc inspection:
 

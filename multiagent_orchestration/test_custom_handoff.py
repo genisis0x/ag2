@@ -8,9 +8,9 @@ Demonstrates that "the user controls how to proceed between agents":
   ``groupchat.messages`` and returns the next ``Agent``. Returning
   ``None`` terminates.
 * **Workflow** uses ``register_condition`` to plug a ``TextContains``
-  predicate into the graph. The graph composes built-in built-in
-  vocabulary (``FromSpeaker``, ``AgentTarget``, ``TerminateTarget``)
-  with the custom condition, no adapter / hub changes.
+  predicate into the graph. The graph composes built-in vocabulary
+  (``FromSpeaker``, ``AgentTarget``, ``TerminateTarget``) with the
+  custom condition — no adapter / hub changes required.
 
 Scenario: a writer drafts a haiku; a reviewer either rejects with
 feedback or approves. The reviewer is instructed to reject the first
@@ -81,7 +81,7 @@ class TextContains:
     keyword: str
     name: ClassVar[str] = "text_contains"
 
-    def evaluate(self, state: Any, envelope: Envelope) -> bool:
+    def evaluate(self, _state: Any, envelope: Envelope) -> bool:
         if envelope.event_type != EV_TEXT:
             return False
         text = (envelope.event_data or {}).get("text", "")
@@ -98,24 +98,32 @@ register_condition(TextContains)
 # ── Shared prompts ──────────────────────────────────────────────────────────
 
 
-WRITER_PROMPT = (
-    "You are a haiku writer. When it is your turn, call ONLY the "
-    "say tool: say(content=<a 3-line haiku about the requested topic>). "
-    "If the previous message starts with 'REJECT', write a different "
-    "haiku addressing the feedback. Output nothing else — no "
-    "explanation, no additional text after the tool call."
+WRITER_ROLE = (
+    "You are a haiku writer. Produce a 3-line haiku about the "
+    "requested topic. If the previous message starts with 'REJECT', "
+    "write a different haiku that addresses the feedback."
 )
 
-REVIEWER_PROMPT = (
+REVIEWER_ROLE = (
     "You are the haiku reviewer. Look at the conversation so far. "
     "If this is the FIRST haiku you are reviewing in this thread "
     "(i.e. you have not yet replied 'REJECT' in this conversation), "
-    "call ONLY: say(content='REJECT: please use stronger imagery'). "
+    "respond exactly: REJECT: please use stronger imagery. "
     "If you have already replied 'REJECT' once and the writer has "
-    "revised, call ONLY: say(content='APPROVE'). Use those exact "
-    "strings. Output nothing else — no explanation, no additional "
-    "text before or after the tool call."
+    "revised, respond exactly: APPROVE. Use those exact strings."
 )
+
+# Workflow agents must invoke the ``say`` tool so the message lands in
+# the session WAL — see the framework note in the README.
+WORKFLOW_TOOL_DIRECTIVE = (
+    " When it is your turn, call ONLY the say tool with the response "
+    "above as ``content``. Output nothing else — no explanation, no "
+    "additional text before or after the tool call."
+)
+
+
+WRITER_PROMPT = WRITER_ROLE + WORKFLOW_TOOL_DIRECTIVE
+REVIEWER_PROMPT = REVIEWER_ROLE + WORKFLOW_TOOL_DIRECTIVE
 
 INITIAL_TASK = "Topic: an autumn morning."
 
@@ -129,13 +137,13 @@ def test_classic_custom_speaker_selection(classic_llm_config) -> None:
 
     writer = ConversableAgent(
         name="writer",
-        system_message=WRITER_PROMPT.replace("call say(content=", "reply with "),
+        system_message=WRITER_ROLE,
         llm_config=classic_llm_config,
         human_input_mode="NEVER",
     )
     reviewer = ConversableAgent(
         name="reviewer",
-        system_message=REVIEWER_PROMPT.replace("call say(content=", "reply with "),
+        system_message=REVIEWER_ROLE,
         llm_config=classic_llm_config,
         human_input_mode="NEVER",
     )

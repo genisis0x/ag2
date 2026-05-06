@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Phase 2.0 — AG2-classic ``Pattern`` → ``WorkflowGraph`` migration.
+"""AG2-classic ``Pattern`` → ``WorkflowGraph`` migration.
 
 The framework's V2 ``WorkflowAdapter`` is a superset of classic
 ``GroupChat`` + ``Handoffs`` + ``AfterWork``: every classic
@@ -11,7 +11,7 @@ This helper performs the translation so users moving off
 ``autogen.agentchat.group.patterns`` get a drop-in replacement
 without hand-rewriting their flow.
 
-Supported in V1 of the helper:
+Supported today:
 
 * ``RoundRobinPattern`` → :meth:`TransitionGraph.round_robin`.
 * ``AutoPattern`` → :meth:`TransitionGraph.auto_pattern` (requires a
@@ -21,10 +21,10 @@ Supported in V1 of the helper:
 Unsupported (raise ``NotImplementedError``) so callers get a clear
 signal instead of a silently-wrong graph:
 
-* ``RandomPattern`` — needs ``RandomTarget`` (Phase 4).
-* ``ManualPattern`` — needs a ``HumanClient`` (post Phase 4).
+* ``RandomPattern`` — needs ``RandomTarget`` (planned).
+* ``ManualPattern`` — needs a ``HumanClient`` (planned).
 * ``DefaultPattern`` with arbitrary handoffs — handoff extraction is
-  Phase 2.1 once the classic ``AfterWork`` / ``OnContextCondition``
+  planned once the classic ``AfterWork`` / ``OnContextCondition``
   vocabulary settles in V2 conditions.
 """
 
@@ -100,9 +100,9 @@ def from_classic_pattern(
 
     Raises:
         UnsupportedPatternError: when the pattern has no V2 equivalent
-            in the current phase. The error message names the missing
-            primitive (e.g. ``RandomTarget``) so the user can tell when
-            the gap will close.
+            yet. The error message names the missing primitive (e.g.
+            ``RandomTarget``) so the user can tell when the gap will
+            close.
     """
     cls_name = type(pattern).__name__
 
@@ -138,19 +138,19 @@ def from_classic_pattern(
 
     if cls_name == "RandomPattern":
         raise UnsupportedPatternError(
-            "RandomPattern → WorkflowGraph requires RandomTarget (Phase 4)."
+            "RandomPattern → WorkflowGraph requires RandomTarget (planned)."
         )
 
     if cls_name == "ManualPattern":
         raise UnsupportedPatternError(
-            "ManualPattern → WorkflowGraph requires HumanClient (post Phase 4)."
+            "ManualPattern → WorkflowGraph requires HumanClient (planned)."
         )
 
     if cls_name == "DefaultPattern":
         # DefaultPattern carries arbitrary per-agent handoffs which
-        # need ContextExpr / OnContextCondition translation. Phase 2.1.
+        # need ContextExpr / OnContextCondition translation (planned).
         raise UnsupportedPatternError(
-            f"DefaultPattern → WorkflowGraph translation is Phase 2.1 "
+            f"DefaultPattern → WorkflowGraph translation is planned "
             f"(needs ContextExpr / OnContextCondition); for now express "
             f"the handoffs directly as Transition(when=..., then=...)."
         )

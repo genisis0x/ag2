@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Phase 2.0 N-of-M quorum tracking.
+"""N-of-M quorum tracking.
 
 Covers:
 

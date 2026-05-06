@@ -9,13 +9,16 @@ tools / handlers can ``send`` envelopes, ``close`` early, or ``info``
 the current state without reaching back through the hub directly.
 """
 
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from ..envelope import EV_TEXT, Envelope
 from ..session import SessionMetadata, SessionState
+from ..transport.frames import ChunkFrame
 
 if TYPE_CHECKING:
     from .agent_client import AgentClient
+    from .chunks import ChunkDelta
 
 __all__ = ("Session",)
 
@@ -82,6 +85,58 @@ class Session:
             depth=depth if depth is not None else 0,
         )
         return await self._client.send_envelope(envelope)
+
+    async def send_chunk(
+        self,
+        parent_envelope_id: str,
+        text: str,
+        *,
+        is_final: bool = False,
+        audience: list[str] | None = None,
+    ) -> int:
+        """Post a streaming chunk under ``parent_envelope_id``.
+
+        Chunks are ephemeral — they are **not** appended to the WAL.
+        Receivers subscribe via :meth:`iter_chunks` for the same
+        parent. Returns the sequence number assigned to this chunk
+        (sender-monotonic per parent envelope id).
+
+        ``audience=None`` broadcasts within the session; pass an
+        explicit list to mirror a private parent envelope's audience.
+        Substantive-text rules (``is_final=True``) are caller policy —
+        the framework does not gate ``EV_TEXT`` on a final chunk.
+        """
+        sequence = self._client._next_chunk_sequence(self.session_id, parent_envelope_id)
+        chunk = ChunkFrame(
+            session_id=self.session_id,
+            parent_envelope_id=parent_envelope_id,
+            sender_id=self._client.agent_id,
+            sequence=sequence,
+            text=text,
+            audience=audience,
+            is_final=is_final,
+        )
+        await self._client._hub.dispatch_chunk(chunk)
+        return sequence
+
+    def iter_chunks(self, parent_envelope_id: str) -> AsyncIterator["ChunkDelta"]:
+        """Subscribe to chunks for ``parent_envelope_id``.
+
+        Yields :class:`ChunkDelta` values as they arrive; the iterator
+        terminates after the chunk with ``is_final=True`` is delivered.
+        Multiple concurrent iterators on the same parent are
+        supported — each gets its own queue and an independent copy
+        of every chunk.
+        """
+        return self._iter_chunks_impl(parent_envelope_id)
+
+    async def _iter_chunks_impl(self, parent_envelope_id: str) -> AsyncIterator["ChunkDelta"]:
+        sub = self._client._register_chunk_subscription(self.session_id, parent_envelope_id)
+        try:
+            async for delta in sub:
+                yield delta
+        finally:
+            self._client._unregister_chunk_subscription(self.session_id, parent_envelope_id, sub)
 
     async def info(self) -> SessionMetadata:
         """Re-fetch metadata from the hub (refreshes cached state)."""

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Phase 2.0 durability primitives.
+"""Durability primitives.
 
 Covers:
 
@@ -171,8 +171,8 @@ async def test_causation_index_rebuilt_on_hydrate(tmp_path) -> None:
 async def test_default_handler_dedups_duplicate_invocation() -> None:
     """Re-firing the handler against an already-replied envelope is a no-op.
 
-    Phase 2.0 idempotency: ``find_envelope_by_causation`` short-circuits
-    before ``agent.ask`` so no duplicate reply lands in the WAL.
+    Idempotency: ``find_envelope_by_causation`` short-circuits before
+    ``agent.ask`` so no duplicate reply lands in the WAL.
     """
     store = MemoryKnowledgeStore()
     hub = await Hub.open(store, ttl_sweep_interval=0)

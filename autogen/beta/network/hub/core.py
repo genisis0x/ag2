@@ -30,6 +30,7 @@ import asyncio
 import contextlib
 import fnmatch
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -60,6 +61,7 @@ from ..errors import (
     NetworkError,
     NotFoundError,
     ProtocolError,
+    RateLimited,
 )
 from ..identity import ObservedStat, Passport, Resume
 from ..ids import make_id
@@ -73,6 +75,7 @@ from ..session import (
 )
 from ..transport.frames import (
     AcceptFrame,
+    ChunkFrame,
     ErrorFrame,
     Frame,
     HelloFrame,
@@ -98,6 +101,7 @@ from .audit import (
     RESUME_SOURCE_TENANT,
     AuditLog,
 )
+from .rate_limiter import TokenBucket, make_bucket
 from .expectations import (
     ExpectationContext,
     ExpectationEvaluator,
@@ -197,6 +201,7 @@ class Hub:
         *,
         auth: AuthRegistry | None = None,
         clock: Callable[[], str] | None = None,
+        monotonic_clock: Callable[[], float] | None = None,
         ttl_sweep_interval: float = 30.0,
         expectation_sweep_interval: float = 10.0,
         invite_ack_timeout: float = 30.0,
@@ -205,6 +210,10 @@ class Hub:
         self._store = store
         self._auth = auth if auth is not None else AuthRegistry.default()
         self._clock = clock if clock is not None else _utc_now_iso
+        # Separate monotonic clock for the rate limiter so tests can
+        # advance time without distorting ISO-stamped audit records.
+        # Defaults to ``time.monotonic``.
+        self._monotonic = monotonic_clock if monotonic_clock is not None else time.monotonic
         self._ttl_sweep_interval = ttl_sweep_interval
         self._expectation_sweep_interval = expectation_sweep_interval
         self._invite_ack_timeout = invite_ack_timeout
@@ -239,21 +248,21 @@ class Hub:
         self._active_sessions: dict[str, SessionMetadata] = {}
         self._adapter_states: dict[str, object] = {}
         self._session_open_waiters: dict[str, asyncio.Future[SessionMetadata]] = {}
-        # Phase 2.0 idempotency index: per-session map of (sender_id,
+        # Idempotency index: per-session map of (sender_id,
         # causation_id) → envelope. Populated by ``post_envelope`` after
         # WAL append and rebuilt from disk on ``hydrate()``. Lookup
         # backs ``find_envelope_by_causation`` so the default notify
         # handler can dedup duplicate replies after redelivery.
         self._causation_index: dict[str, dict[tuple[str, str], Envelope]] = {}
-        # Phase 2.0 ``hide`` violation handler: per-session set of
-        # agent_ids whose inbound delivery is suppressed. WAL still
-        # records their outbound sends; ``_dispatch`` skips notifies to
-        # them. In-memory only — operator intervention rebuilds across
-        # hub restarts.
+        # ``hide`` violation handler: per-session set of agent_ids
+        # whose inbound delivery is suppressed. WAL still records their
+        # outbound sends; ``_dispatch`` skips notifies to them.
+        # In-memory only — operator intervention rebuilds across hub
+        # restarts.
         self._hidden_in_session: dict[str, set[str]] = {}
-        # Phase 2.0 ``remove`` violation handler: per-session set of
-        # agent_ids who can no longer send into the session. Persisted
-        # to ``sessions/{id}/removed.json`` so a restored hub re-applies
+        # ``remove`` violation handler: per-session set of agent_ids
+        # who can no longer send into the session. Persisted to
+        # ``sessions/{id}/removed.json`` so a restored hub re-applies
         # the removal.
         self._removed_from_session: dict[str, set[str]] = {}
 
@@ -265,6 +274,14 @@ class Hub:
         # when the same task receives multiple terminal events (e.g. a
         # session-cascade EXPIRED followed by an owner-emitted COMPLETED).
         self._observed_task_ids: set[str] = set()
+
+        # Per-sender token-bucket cache. Key absent = never built;
+        # key present with ``None`` value = sender's rule has rate
+        # disabled (``per_minute <= 0``); key present with a
+        # ``TokenBucket`` = active limiter. ``set_rule`` / ``unregister``
+        # invalidate the entry so the next post rebuilds from the new
+        # rule. Substantive events only — protocol envelopes bypass.
+        self._rate_buckets: dict[str, TokenBucket | None] = {}
 
         # Per-recipient outstanding-envelope counter for ``InboxBlock.max_pending``
         # enforcement. Incremented on dispatch to that recipient,
@@ -297,6 +314,7 @@ class Hub:
         *,
         auth: AuthRegistry | None = None,
         clock: Callable[[], str] | None = None,
+        monotonic_clock: Callable[[], float] | None = None,
         ttl_sweep_interval: float = 30.0,
         expectation_sweep_interval: float = 10.0,
         invite_ack_timeout: float = 30.0,
@@ -320,6 +338,7 @@ class Hub:
             store,
             auth=auth,
             clock=clock,
+            monotonic_clock=monotonic_clock,
             ttl_sweep_interval=ttl_sweep_interval,
             expectation_sweep_interval=expectation_sweep_interval,
             invite_ack_timeout=invite_ack_timeout,
@@ -470,8 +489,8 @@ class Hub:
         self._violation_handlers[handler.name] = handler
 
     async def evaluate_expectations(self) -> None:
-        """Phase 2.0: evaluate every expectation on every active session;
-        fire registered handlers on new violations.
+        """Evaluate every expectation on every active session; fire
+        registered handlers on new violations.
 
         Promoted from the prior internal ``_expectation_tick`` so users
         running their own scheduler can drive it directly without
@@ -594,6 +613,7 @@ class Hub:
             self._resumes.pop(agent_id, None)
             self._rules.pop(agent_id, None)
             self._skills.pop(agent_id, None)
+            self._rate_buckets.pop(agent_id, None)
             if passport is not None and self._name_to_id.get(passport.name) == agent_id:
                 self._name_to_id.pop(passport.name, None)
 
@@ -759,6 +779,9 @@ class Hub:
         rule.version = (self._rules[agent_id].version + 1) if agent_id in self._rules else rule.version
         await self._persist_rule(agent_id, rule)
         self._rules[agent_id] = rule
+        # Drop the cached bucket so the next post rebuilds from the
+        # new ``LimitsBlock.rate``.
+        self._rate_buckets.pop(agent_id, None)
         await self._audit_log.append({
             "at": self._clock(),
             "kind": AUDIT_KIND_RULE_SET,
@@ -1089,9 +1112,9 @@ class Hub:
         """Look up an envelope by ``(sender_id, causation_id)`` in the
         session's WAL.
 
-        Phase 2.0 idempotency primitive. Returns the prior reply if any
-        — the default notify handler calls this before sending so
-        redelivery doesn't produce duplicate replies.
+        Idempotency primitive. Returns the prior reply if any — the
+        default notify handler calls this before sending so redelivery
+        doesn't produce duplicate replies.
 
         Index is rebuilt from the WAL on ``hydrate()``; no separate
         persisted file. Synchronous because the index is in-memory; the
@@ -1109,10 +1132,10 @@ class Hub:
         """Return active sessions where adapter state expects this agent
         to act but no reply has landed since the triggering envelope.
 
-        Phase 2.0 wake-up primitive. The default handler calls this on
-        reconnect and re-runs ``_process_text`` against each turn's
-        triggering envelope. Same code path as a live notify; the
-        idempotency query above ensures redelivery is safe.
+        Wake-up primitive. The default handler calls this on reconnect
+        and re-runs ``_process_text`` against each turn's triggering
+        envelope. Same code path as a live notify; the idempotency
+        query above ensures redelivery is safe.
 
         Detection logic: the agent is "pending" iff (a) they're a
         participant in an active session, (b) the adapter would accept
@@ -1159,8 +1182,7 @@ class Hub:
         return self._rules.get(agent_id, Rule())
 
     def mark_hidden(self, session_id: str, agent_id: str) -> None:
-        """Phase 2.0: suppress live notifies to ``agent_id`` in this
-        session.
+        """Suppress live notifies to ``agent_id`` in this session.
 
         WAL reads still surface every envelope (audit truth is
         unchanged); only the live notify path skips. In-memory only —
@@ -1172,8 +1194,8 @@ class Hub:
         return agent_id in self._hidden_in_session.get(session_id, set())
 
     async def mark_removed(self, session_id: str, agent_id: str) -> None:
-        """Phase 2.0: bar ``agent_id`` from sending substantive envelopes
-        into this session.
+        """Bar ``agent_id`` from sending substantive envelopes into
+        this session.
 
         Persists to ``sessions/{id}/removed.json`` so the bar survives
         hub restart. Idempotent. Emits ``ag2.session.quorum_changed``
@@ -1356,10 +1378,10 @@ class Hub:
 
         sender_rule = self._rules.get(envelope.sender_id, Rule())
 
-        # Phase 2.0 ``remove`` violation handler — once an agent is
-        # removed from a session they can't post substantive events.
-        # Protocol envelopes (acks, opens, closes) still flow so the
-        # session can wind down cleanly.
+        # ``remove`` violation handler — once an agent is removed from
+        # a session they can't post substantive events. Protocol
+        # envelopes (acks, opens, closes) still flow so the session
+        # can wind down cleanly.
         if not _is_protocol_event(envelope.event_type):
             removed = self._removed_from_session.get(envelope.session_id)
             if removed is not None and envelope.sender_id in removed:
@@ -1384,6 +1406,24 @@ class Hub:
             raise AccessDeniedError(
                 f"sender {sender.name!r} exceeded delegation_depth ({envelope.depth} > {depth_cap})"
             )
+
+        # Rate limiter — token-bucket per sender. Substantive events
+        # only; protocol envelopes (invites, acks, opens, closes,
+        # expectation violations) bypass so the session machine can
+        # advance even under throttle.
+        if not _is_protocol_event(envelope.event_type):
+            if envelope.sender_id in self._rate_buckets:
+                bucket = self._rate_buckets[envelope.sender_id]
+            else:
+                rate = sender_rule.limits.rate
+                bucket = make_bucket(rate.per_minute, rate.burst, self._monotonic())
+                self._rate_buckets[envelope.sender_id] = bucket
+            if bucket is not None and not bucket.consume(self._monotonic()):
+                rate = sender_rule.limits.rate
+                raise RateLimited(
+                    f"sender {sender.name!r} rate limited "
+                    f"(per_minute={rate.per_minute}, burst={rate.burst or rate.per_minute})"
+                )
 
         metadata = self._sessions.get(envelope.session_id)
         if metadata is None:
@@ -1528,9 +1568,9 @@ class Hub:
 
         hidden = self._hidden_in_session.get(envelope.session_id, set())
         for recipient_id in recipients:
-            # Phase 2.0 ``hide`` violation handler — agents flagged as
-            # hidden continue to see the session in WAL reads but do
-            # not receive live notifies.
+            # ``hide`` violation handler — agents flagged as hidden
+            # continue to see the session in WAL reads but do not
+            # receive live notifies.
             if recipient_id in hidden:
                 continue
             recipient_rule = self._rules.get(recipient_id)
@@ -1578,6 +1618,57 @@ class Hub:
             await endpoint.send_frame(WelcomeFrame(endpoint_id=endpoint.endpoint_id, hub_time=self._clock()))
         elif isinstance(frame, PingFrame):
             await endpoint.send_frame(PongFrame())
+        elif isinstance(frame, ChunkFrame):
+            await self._dispatch_chunk(frame)
+
+    async def dispatch_chunk(self, chunk: ChunkFrame) -> None:
+        """Public chunk dispatch.
+
+        Same fan-out as ``_dispatch`` for envelopes but no WAL append,
+        no inbox accounting, no rate-limit consume — chunks are
+        ephemeral preview signal. ``audience=None`` broadcasts within
+        the session (excluding the sender). Caller is responsible for
+        ``parent_envelope_id`` referring to a real WAL entry; the hub
+        does not validate it (a slow validate would defeat the
+        streaming use-case).
+        """
+        await self._dispatch_chunk(chunk)
+
+    async def _dispatch_chunk(self, chunk: ChunkFrame) -> None:
+        metadata = self._sessions.get(chunk.session_id)
+        if metadata is None or metadata.is_terminal():
+            return
+
+        if chunk.audience is None:
+            recipients = [p.agent_id for p in metadata.participants if p.agent_id != chunk.sender_id]
+        else:
+            recipients = list(chunk.audience)
+
+        sender_passport = self._passports.get(chunk.sender_id)
+        sender_name = sender_passport.name if sender_passport is not None else chunk.sender_id
+
+        hidden = self._hidden_in_session.get(chunk.session_id, set())
+        for recipient_id in recipients:
+            if recipient_id in hidden:
+                continue
+            recipient_rule = self._rules.get(recipient_id)
+            if recipient_rule is not None and not _match_any(sender_name, recipient_rule.access.inbound_from):
+                continue
+            endpoint = self._endpoint_for(recipient_id)
+            if endpoint is None:
+                continue
+            await endpoint.send_frame(
+                ChunkFrame(
+                    session_id=chunk.session_id,
+                    parent_envelope_id=chunk.parent_envelope_id,
+                    sender_id=chunk.sender_id,
+                    sequence=chunk.sequence,
+                    text=chunk.text,
+                    audience=chunk.audience,
+                    is_final=chunk.is_final,
+                    recipient_id=recipient_id,
+                )
+            )
 
     # ── Session transition helpers ──────────────────────────────────────────
 
@@ -1592,9 +1683,9 @@ class Hub:
         return invitees, pending, rejects, acks
 
     def _required_acks(self, metadata: SessionMetadata) -> int:
-        """Phase 2.0: resolve effective quorum.
+        """Resolve effective quorum.
 
-        ``required_acks=None`` (V1 default) requires every invitee —
+        ``required_acks=None`` (default) requires every invitee —
         all-or-nothing semantics. Any positive integer is treated as
         the N-of-M threshold; values greater than the invitee count
         clamp down so an over-specified quorum still terminates.
@@ -1610,9 +1701,9 @@ class Hub:
         if envelope.sender_id in metadata.pending_acks:
             metadata.pending_acks.remove(envelope.sender_id)
             await self._persist_session_metadata(metadata)
-        # Phase 2.0: activate as soon as we have enough acks; remaining
-        # pending invitees can still ack later but quorum doesn't wait
-        # on them. ``required_acks=None`` (V1 default) reduces to the
+        # Activate as soon as we have enough acks; remaining pending
+        # invitees can still ack later but quorum doesn't wait on
+        # them. ``required_acks=None`` (default) reduces to the
         # all-acks-required behavior.
         _, _, _, acks = self._quorum_counts(metadata)
         required = self._required_acks(metadata)
@@ -1628,10 +1719,10 @@ class Hub:
             metadata.rejected_by.append(envelope.sender_id)
         await self._persist_session_metadata(metadata)
 
-        # Phase 2.0: with N-of-M quorum, a reject only fails the
-        # session if it makes the threshold unreachable. Otherwise
-        # we keep waiting for the remaining pending invitees, and may
-        # already have enough acks to activate now.
+        # With N-of-M quorum, a reject only fails the session if it
+        # makes the threshold unreachable. Otherwise we keep waiting
+        # for the remaining pending invitees, and may already have
+        # enough acks to activate now.
         _, pending, _, acks = self._quorum_counts(metadata)
         required = self._required_acks(metadata)
 
@@ -1821,8 +1912,8 @@ class Hub:
         metadata = SessionMetadata.from_dict(json.loads(metadata_data))
         self._sessions[session_id] = metadata
 
-        # Phase 2.0 ``remove`` handler persistence: load the set of
-        # agents barred from posting into this session. Loaded even
+        # ``remove`` handler persistence: load the set of agents
+        # barred from posting into this session. Loaded even
         # when the adapter isn't registered yet — the bar is hub-level
         # state, not adapter-level, and should re-apply once the
         # adapter shows up.

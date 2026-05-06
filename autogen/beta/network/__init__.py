@@ -28,10 +28,12 @@ from .adapters import (
     WorkflowAdapter,
     WorkflowState,
 )
-from .auth import AuthAdapter, AuthRegistry, NoAuth
+from .auth import ApiKeyAuth, AuthAdapter, AuthRegistry, NoAuth
 from .client import (
     AgentClient,
     AgentClientInject,
+    ChunkDelta,
+    ChunkSubscription,
     ClientTask,
     HubClient,
     HubInject,
@@ -73,6 +75,7 @@ from .errors import (
     NetworkError,
     NotFoundError,
     ProtocolError,
+    RateLimited,
 )
 from .migration import UnsupportedPatternError, from_classic_pattern
 from .hub import (
@@ -154,6 +157,7 @@ from .transitions import (
 )
 from .transport import (
     AcceptFrame,
+    ChunkFrame,
     ErrorFrame,
     EventFrame,
     Frame,
@@ -171,8 +175,13 @@ from .transport import (
     SubscribeFrame,
     UnsubscribeFrame,
     WelcomeFrame,
+    WsLink,
+    WsLinkClient,
+    WsLinkEndpoint,
     decode_frame,
     encode_frame,
+    make_http_app,
+    serve_ws,
 )
 from .views import FullTranscript, ViewPolicy, WindowedSummary
 
@@ -223,6 +232,7 @@ __all__ = (
     "AgentRuntime",
     "AgentTarget",
     "Always",
+    "ApiKeyAuth",
     "AuditHandler",
     "AuditLog",
     "AuthAdapter",
@@ -230,6 +240,9 @@ __all__ = (
     "AuthError",
     "AuthRegistry",
     "AutoCloseHandler",
+    "ChunkDelta",
+    "ChunkFrame",
+    "ChunkSubscription",
     "ClientTask",
     "ConsultingAdapter",
     "ConsultingState",
@@ -279,6 +292,7 @@ __all__ = (
     "Priority",
     "ProtocolError",
     "RateBlock",
+    "RateLimited",
     "ReceiptFrame",
     "ReplyWithinEvaluator",
     "Resume",
@@ -315,11 +329,15 @@ __all__ = (
     "WorkflowAdapter",
     "WorkflowGraphError",
     "WorkflowState",
+    "WsLink",
+    "WsLinkClient",
+    "WsLinkEndpoint",
     "decode_frame",
     "default_evaluators",
     "default_handler",
     "default_handlers",
     "encode_frame",
+    "make_http_app",
     "make_id",
     "parse_duration",
     "parse_skill_frontmatter",
@@ -328,6 +346,7 @@ __all__ = (
     "register_target",
     "render_fallback_skill",
     "resolve_view_policy",
+    "serve_ws",
     "stamp_dependencies",
     "visible_to",
 )

@@ -36,6 +36,7 @@ from ..envelope import Envelope
 from ..identity import Passport, Resume, ResumeExample
 from ..rule import Rule
 from .checkpoint import HubBackedCheckpointStore
+from .chunks import ChunkDelta, ChunkSubscription
 from .handlers import default_handler
 from .session import Session
 
@@ -48,6 +49,17 @@ __all__ = ("AgentClient",)
 
 EnvelopeHandler = Callable[[Envelope], Awaitable[None]]
 EnvelopePredicate = Callable[[Envelope], bool]
+
+# Tenant-side per-envelope transform hooks.
+# A hook receives the in-flight envelope and returns either a modified
+# envelope (often the same instance) to continue dispatch, or ``None``
+# to drop. Hooks run in registration order; the first ``None`` short-
+# circuits the chain. The stdlib of named transforms (``redact_pii``,
+# ``truncate_long_content``, ``stamp_audit_header``) lives in
+# ``examples/``, not framework-core — these are the two hook points
+# users compose from.
+EnvelopeSendHook = Callable[[Envelope], Awaitable["Envelope | None"]]
+EnvelopeReceiveHook = Callable[[Envelope], Awaitable["Envelope | None"]]
 
 
 class AgentClient:
@@ -88,10 +100,24 @@ class AgentClient:
         # for delegation-depth enforcement (Rule.limits.delegation_depth).
         self._handling_envelope_stack: list[Envelope] = []
 
-        # Phase 2.0: hub-backed checkpoint store for Task.checkpoint
-        # persistence. Lazy — only constructed if accessed; standalone
-        # agents that never checkpoint pay no cost.
+        # Hub-backed checkpoint store for Task.checkpoint persistence.
+        # Lazy — only constructed if accessed; standalone agents that
+        # never checkpoint pay no cost.
         self._checkpoint_store: CheckpointStore | None = None
+
+        # Tenant-side per-envelope hook chains. Run in registration
+        # order on send (outbound) and receive (inbound). A hook
+        # returning ``None`` drops the envelope.
+        self._send_hooks: list[EnvelopeSendHook] = []
+        self._receive_hooks: list[EnvelopeReceiveHook] = []
+
+        # Streaming chunk subscriptions, keyed by
+        # (session_id, parent_envelope_id). Multiple in-flight streams
+        # to the same agent stay isolated by parent envelope id.
+        self._chunk_subscriptions: dict[tuple[str, str], list[ChunkSubscription]] = {}
+        # Sender-side monotonic sequence counter per (session_id,
+        # parent_envelope_id) so callers don't have to track it.
+        self._chunk_sequences: dict[tuple[str, str], int] = {}
 
     # ── Properties ───────────────────────────────────────────────────────────
 
@@ -119,7 +145,7 @@ class AgentClient:
 
     @property
     def checkpoint_store(self) -> CheckpointStore:
-        """Phase 2.0: hub-backed ``CheckpointStore`` for ``Task.checkpoint``.
+        """Hub-backed ``CheckpointStore`` for ``Task.checkpoint``.
 
         Pass to ``agent.task(checkpoint_store=...)`` when you want a
         long-running task to survive interruption — the checkpoint
@@ -134,7 +160,18 @@ class AgentClient:
     # ── NetworkClient impl ───────────────────────────────────────────────────
 
     async def receive(self, envelope: Envelope) -> None:
-        """Hub delivery → fan out to inbox + (suppressible) handler."""
+        """Hub delivery → fan out to inbox + (suppressible) handler.
+
+        Receive hooks run before fan-out. A hook returning ``None``
+        drops the envelope entirely (no inbox put, no handler
+        invocation); the WAL still has the original because hooks run
+        client-side after hub-side persistence.
+        """
+        for hook in self._receive_hooks:
+            result = await hook(envelope)
+            if result is None:
+                return
+            envelope = result
         inbox = self._session_inboxes.get(envelope.session_id)
         if inbox is not None:
             await inbox.put(envelope)
@@ -291,12 +328,89 @@ class AgentClient:
     # ── Envelope send ────────────────────────────────────────────────────────
 
     async def send_envelope(self, envelope: Envelope) -> str:
-        """Post an envelope through the hub. Returns the stamped envelope_id."""
+        """Post an envelope through the hub. Returns the stamped envelope_id.
+
+        Send hooks run before posting. A hook returning ``None`` drops
+        the send and returns an empty envelope_id — callers that care
+        about delivery must check the return value.
+        """
         if self._disconnected:
             raise RuntimeError("AgentClient is disconnected")
         if envelope.sender_id == "":
             envelope.sender_id = self.agent_id
+        for hook in self._send_hooks:
+            result = await hook(envelope)
+            if result is None:
+                return ""
+            envelope = result
         return await self._hub_client.post_envelope(envelope)
+
+    # ── Tenant-side per-envelope hooks ──────────────────────────────────────
+
+    def add_send_hook(self, hook: EnvelopeSendHook) -> None:
+        """Register a per-envelope outbound transform.
+
+        Hooks run in registration order on every ``send_envelope`` call,
+        before the envelope reaches the hub. Each hook returns the
+        (possibly-modified) envelope to continue, or ``None`` to drop.
+        The first ``None`` short-circuits the chain.
+        """
+        self._send_hooks.append(hook)
+
+    def add_receive_hook(self, hook: EnvelopeReceiveHook) -> None:
+        """Register a per-envelope inbound transform.
+
+        Hooks run in registration order on every ``receive`` call,
+        before the inbox put and notify handler. Each hook returns the
+        (possibly-modified) envelope to continue, or ``None`` to drop.
+        Hub-side WAL is unaffected — hooks are client-local.
+        """
+        self._receive_hooks.append(hook)
+
+    # ── Streaming chunks ────────────────────────────────────────────────────
+
+    async def receive_chunk(self, delta: ChunkDelta, *, session_id: str, parent_envelope_id: str) -> None:
+        """Hub delivery of an inbound chunk → fan out to subscribers.
+
+        Subscribers register via :meth:`Session.iter_chunks`; on
+        ``is_final`` the subscription closes itself. Chunks for an
+        unknown parent are silently dropped (a subscriber may not
+        have registered yet, or may have already torn down).
+        """
+        key = (session_id, parent_envelope_id)
+        subs = self._chunk_subscriptions.get(key)
+        if not subs:
+            return
+        for sub in list(subs):
+            await sub.put(delta)
+
+    def _register_chunk_subscription(
+        self, session_id: str, parent_envelope_id: str
+    ) -> ChunkSubscription:
+        sub = ChunkSubscription()
+        key = (session_id, parent_envelope_id)
+        self._chunk_subscriptions.setdefault(key, []).append(sub)
+        return sub
+
+    def _unregister_chunk_subscription(
+        self, session_id: str, parent_envelope_id: str, sub: ChunkSubscription
+    ) -> None:
+        key = (session_id, parent_envelope_id)
+        subs = self._chunk_subscriptions.get(key)
+        if subs is None:
+            return
+        try:
+            subs.remove(sub)
+        except ValueError:
+            pass
+        if not subs:
+            self._chunk_subscriptions.pop(key, None)
+
+    def _next_chunk_sequence(self, session_id: str, parent_envelope_id: str) -> int:
+        key = (session_id, parent_envelope_id)
+        seq = self._chunk_sequences.get(key, 0)
+        self._chunk_sequences[key] = seq + 1
+        return seq
 
     # ── Tenant-driven mutation ───────────────────────────────────────────────
 
@@ -328,7 +442,7 @@ class AgentClient:
             await self._hub_client.unregister_agent(self.agent_id)
             self._disconnected = True
 
-    # ── Phase 2.0 durability ────────────────────────────────────────────────
+    # ── Durability ──────────────────────────────────────────────────────────
 
     async def resume_pending_turns(self) -> int:
         """Re-run the registered envelope handler for any pending turns.

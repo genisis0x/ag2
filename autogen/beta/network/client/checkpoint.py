@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``HubBackedCheckpointStore`` — Phase 2.0 task checkpoint adapter.
+"""``HubBackedCheckpointStore`` — task checkpoint adapter.
 
 Wraps a hub's :class:`KnowledgeStore` so ``Task.checkpoint(state)``
 writes JSON to ``/tasks/{task_id}/checkpoint.json`` and resume reads

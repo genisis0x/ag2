@@ -276,8 +276,8 @@ class MaxSilenceEvaluator:
 
 
 class TurnWithinEvaluator:
-    """Phase 2.0: fire when an adapter's expected next speaker hasn't
-    posted within T seconds of the trigger envelope.
+    """Fire when an adapter's expected next speaker hasn't posted
+    within T seconds of the trigger envelope.
 
     Reads ``state.expected_next_speaker`` opportunistically — works for
     workflow and round-robin discussion adapters that track this
@@ -334,7 +334,7 @@ class TurnWithinEvaluator:
 
 
 class ProgressWithinEvaluator:
-    """Phase 2.0: fire when an active task has had no progress for T.
+    """Fire when an active task has had no progress for T.
 
     Pure-WAL evaluator: walks task envelopes (``ag2.task.started`` /
     ``ag2.task.progress``), groups by ``task_id``, and fires per-task
@@ -397,8 +397,8 @@ class ProgressWithinEvaluator:
 
 
 class MinParticipationEvaluator:
-    """Phase 2.0: fire when a participant posted fewer than ``count``
-    content envelopes in the last ``window_seconds``.
+    """Fire when a participant posted fewer than ``count`` content
+    envelopes in the last ``window_seconds``.
 
     Defaults: ``count=1``, ``window_seconds=600``. Useful for
     discussion-style sessions where every voice should be heard.
@@ -534,8 +534,8 @@ class AutoCloseHandler:
 
 
 class WarnHandler:
-    """Phase 2.0: audit + emit ``EV_EXPECTATION_VIOLATED`` to the
-    violator(s) only.
+    """Audit + emit ``EV_EXPECTATION_VIOLATED`` to the violator(s)
+    only.
 
     Differs from ``notify_session`` (broadcast): ``warn`` is targeted,
     so the offending participant gets the signal without spamming the
@@ -572,7 +572,7 @@ class WarnHandler:
 
 
 class HideHandler:
-    """Phase 2.0: audit + suppress live notifies to the violator.
+    """Audit + suppress live notifies to the violator.
 
     The violator's WAL view is unaffected (audit truth is unchanged);
     only their live ``notify`` deliveries are dropped. Useful for
@@ -595,7 +595,7 @@ class HideHandler:
 
 
 class RemoveHandler:
-    """Phase 2.0: audit + bar the violator from sending into the session.
+    """Audit + bar the violator from sending into the session.
 
     Posts ``ag2.participant.removed`` with the offending agent_id and
     reason so peers can react. The bar is persisted to

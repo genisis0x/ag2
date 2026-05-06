@@ -21,6 +21,7 @@ from ..envelope import Envelope
 
 __all__ = (
     "AcceptFrame",
+    "ChunkFrame",
     "ErrorFrame",
     "EventFrame",
     "Frame",
@@ -179,6 +180,39 @@ class EventFrame:
     envelope: Envelope
 
 
+@dataclass(slots=True)
+class ChunkFrame:
+    """Streaming partial-text frame.
+
+    Chunks are ephemeral — they ride the same audience rules as their
+    parent envelope but are **not** persisted to the WAL. The parent's
+    consolidated text envelope (typically posted after the final chunk)
+    is the durable record.
+
+    Direction:
+
+    * client → hub: ``recipient_id`` is empty. Sender posts a chunk
+      against ``parent_envelope_id``; hub fans out per recipient.
+    * hub → client: ``recipient_id`` is stamped per delivery so the
+      ``HubClient`` demux routes directly without re-walking
+      participants — same mechanic ``NotifyFrame`` uses.
+
+    ``sequence`` is sender-monotonic per ``parent_envelope_id`` so
+    receivers can detect drops. ``is_final`` marks the terminal chunk
+    so subscribers can break out of ``iter_chunks`` cleanly.
+    """
+
+    kind: ClassVar[str] = "chunk"
+    session_id: str
+    parent_envelope_id: str
+    sender_id: str
+    sequence: int
+    text: str
+    audience: list[str] | None = None
+    is_final: bool = False
+    recipient_id: str = ""
+
+
 Frame: TypeAlias = (
     HelloFrame
     | WelcomeFrame
@@ -192,6 +226,7 @@ Frame: TypeAlias = (
     | SubscribeFrame
     | UnsubscribeFrame
     | EventFrame
+    | ChunkFrame
 )
 
 
@@ -208,6 +243,7 @@ _FRAME_CLASSES: dict[str, type] = {
     "subscribe": SubscribeFrame,
     "unsubscribe": UnsubscribeFrame,
     "event": EventFrame,
+    "chunk": ChunkFrame,
 }
 
 

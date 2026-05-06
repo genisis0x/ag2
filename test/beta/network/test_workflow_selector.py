@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Phase 2.0 workflow extras: LLMSelectorTarget + classic Pattern migration.
+"""Workflow extras: LLMSelectorTarget + classic Pattern migration.
 
 LLMSelectorTarget routes the next turn to a selector agent who then
 hands off to a candidate via tool call. ``TransitionGraph.auto_pattern``
@@ -239,7 +239,7 @@ def test_migrates_auto_pattern_without_selector_errors() -> None:
 
 
 def test_migrates_random_pattern_errors() -> None:
-    """RandomPattern is Phase 4 — error names the missing primitive."""
+    """RandomPattern is unsupported — error names the missing primitive."""
     initial = _FakeAgent("alice")
     pattern = _RandomPattern(
         initial_agent=initial,

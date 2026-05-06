@@ -110,8 +110,8 @@ def session_tasks_index_path(session_id: str) -> str:
 
 
 def session_removed_path(session_id: str) -> str:
-    """Phase 2.0 — agents removed from this session by the ``remove``
-    violation handler. JSON list of agent_ids."""
+    """Agents removed from this session by the ``remove`` violation
+    handler. JSON list of agent_ids."""
     return f"/sessions/{session_id}/removed.json"
 
 
@@ -131,7 +131,7 @@ def task_events_path(task_id: str) -> str:
 
 
 def task_checkpoint_path(task_id: str) -> str:
-    """Phase 2.0 — owner-supplied resume state, written by Task.checkpoint."""
+    """Owner-supplied resume state, written by Task.checkpoint."""
     return f"/tasks/{task_id}/checkpoint.json"
 
 

@@ -15,6 +15,7 @@ __all__ = (
     "NetworkError",
     "NotFoundError",
     "ProtocolError",
+    "RateLimited",
 )
 
 
@@ -45,3 +46,13 @@ class ProtocolError(NetworkError):
 
 class InboxFull(NetworkError):  # noqa: N818  # historical name; kept for API stability
     """Recipient inbox is at capacity and overflow policy is ``reject``."""
+
+
+class RateLimited(NetworkError):  # noqa: N818  # parallels ``InboxFull`` naming
+    """Sender exceeded their ``LimitsBlock.rate`` token-bucket budget.
+
+    Enforced at ``Hub.post_envelope`` for substantive events only.
+    Protocol envelopes (invites, acks, opens, closes, expectation
+    violations) bypass the limiter so the session machine can advance
+    even under throttle.
+    """

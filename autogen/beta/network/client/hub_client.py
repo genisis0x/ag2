@@ -25,10 +25,12 @@ from ..envelope import Envelope
 from ..identity import Passport, Resume
 from ..rule import Rule
 from ..session import SessionMetadata, SessionState
-from ..transport.frames import NotifyFrame
-from ..transport.local import LocalLink, LocalLinkClient
+from ..transport.frames import ChunkFrame, NotifyFrame
+from ..transport.link import LinkClient
+from ..transport.local import LocalLink
 from ..views.base import ViewPolicy
 from .agent_client import AgentClient
+from .chunks import ChunkDelta
 from .plugin import NetworkPlugin
 
 if TYPE_CHECKING:
@@ -51,21 +53,34 @@ class HubClient:
     connects to.
     """
 
-    def __init__(self, link: LocalLink, *, hub: "Hub | None" = None) -> None:
+    def __init__(self, link: "LocalLink | object", *, hub: "Hub | None" = None) -> None:
         # __init__ stores params; side effects deferred to register()/close().
+        # ``link`` is typed loosely so ``WsLink`` (wire transport) can
+        # plug in alongside ``LocalLink`` without widening this type to
+        # a structural Protocol just yet.
         self._link = link
-        self._hub = hub if hub is not None else link.hub
-        self._client_link: LocalLinkClient | None = None
+        # ``LocalLink`` exposes a direct ``hub`` reference (in-process);
+        # ``WsLink`` does not. Wire transports must be paired with
+        # ``hub=None`` and route control-plane calls through frames.
+        self._hub = hub if hub is not None else getattr(link, "hub", None)
+        self._client_link: LinkClient | None = None
         self._receive_task: asyncio.Task[None] | None = None
         self._clients: dict[str, AgentClient] = {}
         self._closed = False
 
     # ── Connection ───────────────────────────────────────────────────────────
 
-    def _ensure_connected(self) -> LocalLinkClient:
-        """Open the link on first use; subsequent calls reuse the connection."""
+    async def _ensure_connected(self) -> LinkClient:
+        """Open the link on first use; subsequent calls reuse the connection.
+
+        ``LocalLinkClient.open()`` is a no-op so in-process callers see
+        zero behaviour change. Wire transports (``WsLinkClient``)
+        perform the actual handshake here so the rest of the client
+        stays oblivious to whether the link is local or remote.
+        """
         if self._client_link is None:
             self._client_link = self._link.client()
+            await self._client_link.open()
             self._receive_task = asyncio.create_task(self._receive_loop())
         return self._client_link
 
@@ -76,6 +91,8 @@ class HubClient:
             async for frame in self._client_link.frames():
                 if isinstance(frame, NotifyFrame):
                     await self._dispatch_notify(frame)
+                elif isinstance(frame, ChunkFrame):
+                    await self._dispatch_chunk(frame)
                 # Other frame kinds (Accept/Error/Pong/Event) bypass the
                 # demuxer — the in-process send path goes direct via
                 # ``Hub.post_envelope`` so ``AcceptFrame`` is unused here.
@@ -84,6 +101,26 @@ class HubClient:
         except Exception:
             # Receive loops must not propagate.
             pass
+
+    async def _dispatch_chunk(self, frame: ChunkFrame) -> None:
+        """Route an inbound chunk to the recipient's
+        ``AgentClient.receive_chunk``."""
+        if not frame.recipient_id:
+            return
+        client = self._clients.get(frame.recipient_id)
+        if client is None:
+            return
+        delta = ChunkDelta(
+            sender_id=frame.sender_id,
+            sequence=frame.sequence,
+            text=frame.text,
+            is_final=frame.is_final,
+        )
+        await client.receive_chunk(
+            delta,
+            session_id=frame.session_id,
+            parent_envelope_id=frame.parent_envelope_id,
+        )
 
     async def _dispatch_notify(self, frame: NotifyFrame) -> None:
         """Route the envelope to the recipient stamped on the frame.
@@ -132,7 +169,7 @@ class HubClient:
         if self._closed:
             raise RuntimeError("HubClient is closed")
 
-        client_link = self._ensure_connected()
+        client_link = await self._ensure_connected()
 
         effective_rule = rule if rule is not None else Rule()
         passport = await self._hub.register(passport, resume, skill_md=skill_md, rule=effective_rule)
@@ -162,7 +199,7 @@ class HubClient:
         name: str,
         attach_plugin: bool = True,
     ) -> AgentClient:
-        """Phase 2.0: reconnect ``agent`` to an existing identity by name.
+        """Reconnect ``agent`` to an existing identity by name.
 
         Looks up the existing ``agent_id`` for ``name``, binds this
         connection's endpoint to it, constructs a fresh ``AgentClient``,
@@ -175,7 +212,7 @@ class HubClient:
         if self._closed:
             raise RuntimeError("HubClient is closed")
 
-        client_link = self._ensure_connected()
+        client_link = await self._ensure_connected()
 
         passport = await self._hub.get_agent(name)
         if passport.agent_id is None:
@@ -312,7 +349,7 @@ class HubClient:
         sender_id: str,
         causation_id: str,
     ) -> Envelope | None:
-        """Phase 2.0 idempotency query passthrough."""
+        """Idempotency query passthrough."""
         return self._hub.find_envelope_by_causation(
             session_id,
             sender_id=sender_id,
@@ -320,7 +357,7 @@ class HubClient:
         )
 
     async def pending_turns_for(self, agent_id: str) -> list["PendingTurn"]:
-        """Phase 2.0 wake-up query passthrough."""
+        """Wake-up query passthrough."""
         return await self._hub.pending_turns_for(agent_id)
 
     def can_send(

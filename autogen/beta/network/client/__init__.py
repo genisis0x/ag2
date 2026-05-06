@@ -10,6 +10,7 @@ tenant process. The hub never imports anything from here.
 """
 
 from .agent_client import AgentClient
+from .chunks import ChunkDelta, ChunkSubscription
 from .handlers import (
     default_handler,
     read_wal_until,
@@ -27,6 +28,8 @@ from .task import ClientTask
 __all__ = (
     "AgentClient",
     "AgentClientInject",
+    "ChunkDelta",
+    "ChunkSubscription",
     "ClientTask",
     "HubClient",
     "HubInject",

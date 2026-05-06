@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Phase 2.0 task cancellation.
+"""Task cancellation.
 
 Covers:
 

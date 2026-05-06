@@ -57,16 +57,16 @@ EV_SESSION_OPENED = "ag2.session.opened"
 EV_SESSION_CLOSED = "ag2.session.closed"
 EV_SESSION_EXPIRED = "ag2.session.expired"
 
-# Phase 2.0 — N-of-M quorum tracking. Emitted by the hub when the
-# count of active participants in a multi-party session changes
-# (typically a ``remove`` violation handler firing). ``event_data``
-# carries ``{"remaining": int, "required": int}`` so peers can react
-# without re-walking ``metadata.participants``.
+# N-of-M quorum tracking. Emitted by the hub when the count of active
+# participants in a multi-party session changes (typically a ``remove``
+# violation handler firing). ``event_data`` carries
+# ``{"remaining": int, "required": int}`` so peers can react without
+# re-walking ``metadata.participants``.
 EV_QUORUM_CHANGED = "ag2.session.quorum_changed"
 
 EV_EXPECTATION_VIOLATED = "ag2.expectation.violated"
 
-# Phase 2.0 task cancellation:
+# Task cancellation:
 # * ``EV_TASK_CANCEL_REQUEST`` — peer asks the owner to cancel a task.
 #   ``event_data`` carries ``{"task_id": str, "reason": str}``. Owners
 #   are free to honour or ignore — cancellation is owner-driven.

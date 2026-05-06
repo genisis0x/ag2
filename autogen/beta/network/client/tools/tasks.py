@@ -147,9 +147,9 @@ def make_tasks_tool(agent_client: "AgentClient") -> object:
             return f"Error: task {task_id!r} did not complete within {timeout}s"
 
         if action == "cancel":
-            # Phase 2.0: post an ``ag2.task.cancel_request`` envelope to
-            # the owner's session so they can decide whether to honour
-            # it. Cancellation is owner-driven — this verb is only the
+            # Post an ``ag2.task.cancel_request`` envelope to the
+            # owner's session so they can decide whether to honour it.
+            # Cancellation is owner-driven — this verb is only the
             # peer's request.
             if not task_id:
                 return "Error: cancel requires `task_id`"

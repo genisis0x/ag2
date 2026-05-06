@@ -209,7 +209,7 @@ class TaskMirror:
         await self._record_observation_if_tagged(event.task_id, TaskState.EXPIRED)
 
     async def _on_cancelled(self, event: TaskCancelled) -> None:
-        """Phase 2.0: mirror an owner cancellation to the hub."""
+        """Mirror an owner cancellation to the hub."""
         try:
             await self._update(
                 event.task_id,

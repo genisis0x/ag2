@@ -180,7 +180,7 @@ class TerminateTarget:
 
 @dataclass(slots=True)
 class LLMSelectorTarget:
-    """Phase 2.0: route the next turn to an LLM-driven selector.
+    """Route the next turn to an LLM-driven selector.
 
     The AG2-classic ``AutoPattern`` equivalent. Resolves to
     ``selector_id`` so that agent's notify handler engages its LLM;
@@ -437,7 +437,7 @@ class TransitionGraph:
         handoff_tools: dict[str, str] | None = None,
         max_turns: int | None = None,
     ) -> "TransitionGraph":
-        """Phase 2.0: AG2-classic ``AutoPattern`` equivalent.
+        """AG2-classic ``AutoPattern`` equivalent.
 
         Wires a selector + candidates into a graph that:
 

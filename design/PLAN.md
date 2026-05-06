@@ -319,29 +319,46 @@ Beta suite total: **1637 passing**, +44 from V1 baseline, zero regressions acros
 
 **Hygiene** (tools-not-systems): `_expectation_tick` promoted to public `Hub.evaluate_expectations()` so users running their own scheduler don't reach into privates. `Hub.get_rule(agent_id)` / `Hub.mark_hidden` / `Hub.mark_removed` exposed for the same reason.
 
+**Cross-paradigm parity suite (`multiagent_orchestration/`, ~1530 LOC across 5 test files):** off-by-default Gemini-driven test harness that pairs each AG2-classic pattern with its `TransitionGraph` recipe and asserts behavioural equivalence. Covers `RoundRobinPattern`, `AutoPattern` (auto-manager), sequential pipelines, swarm handoffs, and custom handoff routing. Lives outside `test/beta/network/` because it hits real models; serves as the load-bearing acceptance evidence that `from_classic_pattern` migration is real, not just a translator unit-test.
+
 ### Phase 2.1 — Sugar
 
 Useful but not load-bearing. Each ships when there's user demand.
 - `Composite` view policy
 - Discussion `dynamic` and `static` ordering modes
-- Streaming `chunk` frames + `Session.send_chunk` / `Session.iter_chunks`
 - `ContextExpr`, `TurnCountReached` workflow conditions
-- Rate limiter token bucket (per-minute, burst)
 - Custom expectation evaluators (user-registered Python callables)
 - `drop_oldest` / `drop_newest` inbox overflow policies
 - `OnFailure` transitions — saga choreography composed from existing `Transition` vocabulary
+- Causation-index pruning on session close — `Hub._index_causation` grows for the lifetime of a session; bound it once long-lived sessions become real (audit surfaced this; not blocking 2.0 adoption since current sessions are bounded)
+- `DefaultPattern` migration target — `from_classic_pattern` already raises `UnsupportedPatternError("Phase 2.1")` with guidance; concrete translation lands here
 
-### Phase 3 — Cross-process
+(Streaming chunk frames and the rate-limiter token bucket originally lived here; pulled forward to Phase 3 because they pair structurally with going on the wire — see below.)
 
-Tightened: durability primitives ship in 2.0 over `LocalLink`, so Phase 3 is the wire-level work to make them work across hosts. No new protocol concepts.
+### Phase 3 — Cross-process + production hardening
 
-- `WsLink` (WebSocket transport) — same `Link` Protocol surface
-- HTTP CRUD surface (10 endpoints) via Starlette
-- `ApiKeyAuth` adapter
-- Cross-process cursor replay — the in-process semantics from 2.0 already work; Phase 3 exercises them on the wire
-- `network_changed` push frame + cache invalidation in `NetworkContextPolicy`
-- `AgentClient.add_send_hook(callable)` / `add_receive_hook(callable)` — two hook points for tenant-side per-envelope logic. Replaces the prior 4-stage `TransformPipeline` design; the stdlib of named transforms (`redact_pii`, `truncate_long_content`, `stamp_audit_header`) lives in `examples/`, not framework-core.
-- `dispatch_audience` adapter hook — per-recipient routing optimization that earns its keep when network round-trips are real
+Tightened: durability primitives ship in 2.0 over `LocalLink`, so Phase 3 is the wire-level work to make them work across hosts. **Two items pulled forward from 2.1** because they don't earn their keep until you cross a network boundary — streaming chunks (LLM UX is broken without progressive output over a wire) and the rate-limiter token bucket (you want a throttle on `ApiKeyAuth` before the first abuse report, not after). The remainder of 2.1 stays demand-driven.
+
+Phase 3 lands as **three sequential milestones** under the same additive-merge rule as Phase 1: every milestone is independently mergeable; nothing rewrites earlier work.
+
+| Milestone | Status | Theme | Tests |
+|---|---|---|---|
+| M1 — Streaming + safety + hooks | ✅ shipped (uncommitted) | additive surface, no transport changes | 18 (6 hooks + 6 rate-limit + 6 streaming) |
+| M2 — Wire transport + auth | ✅ shipped (uncommitted) | new transport plane — `WsLink`, HTTP CRUD, `ApiKeyAuth` | 16 (6 ApiKeyAuth + 4 WsLink + 6 HTTP) |
+| M3 — Cross-process semantics | not started | exercises 2.0 durability on the wire | cross-process cursor replay, `network_changed` push frame + `NetworkContextPolicy` cache invalidation, `dispatch_audience` adapter hook |
+
+After M1+M2: beta suite **1669 passing, zero regressions**, +34 from Phase 2.0 baseline.
+
+Item-level detail:
+- ✅ **Streaming `chunk` frames + `Session.send_chunk` / `Session.iter_chunks`** (M1) — `ChunkFrame` is a new wire frame; chunks are ephemeral (no WAL append) and reference a parent envelope id. Hub fans out per-recipient using the same audience/access path as `NotifyFrame`. Sender-monotonic sequence numbers per parent envelope. `ChunkSubscription` on the client-side demuxes by `(session_id, parent_envelope_id)` so concurrent streams to the same agent stay isolated.
+- ✅ **Rate limiter token bucket** (M1) — per-sender token bucket in `hub/rate_limiter.py`. Wired into `Hub.post_envelope` between the delegation-depth check and the WAL append; substantive events only (protocol envelopes bypass so the session machine never deadlocks under throttle). `LimitsBlock.rate` activates it; `per_minute=0` (V1 default) skips entirely. `set_rule` invalidates the cached bucket; `unregister` drops it. Hub takes an optional `monotonic_clock` constructor arg for deterministic testing.
+- ✅ `AgentClient.add_send_hook(callable)` / `add_receive_hook(callable)` (M1) — two hook points for tenant-side per-envelope logic. Replaces the prior 4-stage `TransformPipeline` design; the stdlib of named transforms (`redact_pii`, `truncate_long_content`, `stamp_audit_header`) lives in `examples/`, not framework-core. Hooks return `Envelope` to continue or `None` to drop; first `None` short-circuits.
+- ✅ `WsLink` (WebSocket transport) (M2) — same `Link` Protocol surface as `LocalLink`; JSON-encoded frames over `websockets.asyncio`. New module `transport/ws.py` with `WsLink`/`WsLinkClient`/`WsLinkEndpoint` + `serve_ws(hub)` async-context-manager server. `HubClient._ensure_connected` is now async so wire transports can await connect; `LocalLinkClient.open()` stays a no-op so in-process callers see no behaviour change.
+- ✅ HTTP CRUD surface (10 endpoints) via Starlette (M2) — `make_http_app(hub)` returns an ASGI app. Routes: register / list_agents / get_agent / unregister / create_session / list_sessions / get_session / close_session / post_envelope / read_wal. Pure-ASGI auth middleware (not `BaseHTTPMiddleware` — that breaks under `httpx.ASGITransport`). Auth uses the passport's declared `AuthBlock.scheme` so a mixed `NoAuth + ApiKeyAuth` registry isn't a backdoor for ApiKeyAuth-tagged identities.
+- ✅ `ApiKeyAuth` adapter (M2) — `AuthAdapter` impl in `auth.py`. Static `keys: Mapping[str, str]` or dynamic `resolver: Callable`. Constant-time compare via `hmac.compare_digest`. Fails closed on unknown identity.
+- Cross-process cursor replay (M3) — `inbox.cursor` + Receipt wiring; the in-process semantics from 2.0 already work, M3 exercises them when transports can drop and replay.
+- `network_changed` push frame + cache invalidation in `NetworkContextPolicy` (M3) — peer list / capability index stays fresh across processes.
+- `dispatch_audience` adapter hook (M3) — per-recipient routing optimization that earns its keep when network round-trips are real.
 
 ### Phase 4 — On-demand
 

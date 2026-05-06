@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Phase 2.0 expectation evaluators + violation handlers.
+"""Expectation evaluators + violation handlers.
 
 Each test drives the hub's :meth:`evaluate_expectations` directly with
 a controllable clock so the sweeper logic is exercised deterministically.

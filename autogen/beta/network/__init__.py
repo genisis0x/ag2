@@ -52,6 +52,7 @@ from .client import (
 from .envelope import (
     EV_EXPECTATION_VIOLATED,
     EV_HANDOFF,
+    EV_QUORUM_CHANGED,
     EV_SESSION_CLOSED,
     EV_SESSION_EXPIRED,
     EV_SESSION_INVITE,
@@ -191,6 +192,7 @@ __all__ = (
     "DISCUSSION_TYPE",
     "EV_EXPECTATION_VIOLATED",
     "EV_HANDOFF",
+    "EV_QUORUM_CHANGED",
     "EV_SESSION_CLOSED",
     "EV_SESSION_EXPIRED",
     "EV_SESSION_INVITE",

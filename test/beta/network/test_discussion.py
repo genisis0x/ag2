@@ -305,7 +305,9 @@ async def test_discussion_partial_reject_fails_session() -> None:
     )
     carol.on_envelope(_make_rejecter(carol))
 
-    with pytest.raises(ProtocolError, match="rejected"):
+    # required_acks=None still means "everyone must ack" — a single
+    # reject makes the all-or-nothing quorum unreachable.
+    with pytest.raises(ProtocolError, match="quorum_unreachable|rejected"):
         await alice.open(
             type=DISCUSSION_TYPE,
             target=[bob.agent_id, carol.agent_id],

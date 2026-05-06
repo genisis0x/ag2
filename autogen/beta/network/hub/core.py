@@ -44,6 +44,7 @@ from ..adapters.discussion import DiscussionAdapter
 from ..adapters.workflow import WorkflowAdapter
 from ..auth import AuthRegistry
 from ..envelope import (
+    EV_QUORUM_CHANGED,
     EV_SESSION_CLOSED,
     EV_SESSION_EXPIRED,
     EV_SESSION_INVITE,
@@ -1175,13 +1176,42 @@ class Hub:
         into this session.
 
         Persists to ``sessions/{id}/removed.json`` so the bar survives
-        hub restart. Idempotent.
+        hub restart. Idempotent. Emits ``ag2.session.quorum_changed``
+        when the affected session is active so peers can react to the
+        reduced participant count.
         """
         bucket = self._removed_from_session.setdefault(session_id, set())
         if agent_id in bucket:
             return
         bucket.add(agent_id)
         await self._persist_session_removed(session_id)
+
+        metadata = self._sessions.get(session_id)
+        if metadata is None or metadata.state != SessionState.ACTIVE:
+            return
+        invitees, _, _, _ = self._quorum_counts(metadata)
+        # Required is the original threshold (or full set for V1
+        # all-or-nothing); remaining is the count of participants who
+        # haven't been removed.
+        required = (
+            metadata.required_acks
+            if metadata.required_acks is not None
+            else invitees
+        )
+        remaining = sum(
+            1
+            for p in metadata.participants
+            if p.agent_id != metadata.creator_id and p.agent_id not in bucket
+        )
+        envelope = Envelope(
+            session_id=session_id,
+            sender_id=metadata.creator_id,
+            audience=None,
+            event_type=EV_QUORUM_CHANGED,
+            event_data={"remaining": remaining, "required": required},
+        )
+        with contextlib.suppress(Exception):
+            await self.post_envelope(envelope)
 
     def is_removed(self, session_id: str, agent_id: str) -> bool:
         return agent_id in self._removed_from_session.get(session_id, set())
@@ -1551,13 +1581,42 @@ class Hub:
 
     # ── Session transition helpers ──────────────────────────────────────────
 
+    def _quorum_counts(self, metadata: SessionMetadata) -> tuple[int, int, int, int]:
+        """Return ``(invitees, pending, rejects, acks)`` for the
+        handshake in ``metadata``. ``invitees`` counts non-creator
+        participants — the universe the quorum is computed over."""
+        invitees = sum(1 for p in metadata.participants if p.agent_id != metadata.creator_id)
+        pending = len(metadata.pending_acks)
+        rejects = len(metadata.rejected_by)
+        acks = invitees - pending - rejects
+        return invitees, pending, rejects, acks
+
+    def _required_acks(self, metadata: SessionMetadata) -> int:
+        """Phase 2.0: resolve effective quorum.
+
+        ``required_acks=None`` (V1 default) requires every invitee —
+        all-or-nothing semantics. Any positive integer is treated as
+        the N-of-M threshold; values greater than the invitee count
+        clamp down so an over-specified quorum still terminates.
+        """
+        invitees, *_ = self._quorum_counts(metadata)
+        if metadata.required_acks is None:
+            return invitees
+        return min(metadata.required_acks, invitees)
+
     async def _handle_invite_ack(self, envelope: Envelope, metadata: SessionMetadata) -> None:
         if metadata.state != SessionState.PENDING:
             return
         if envelope.sender_id in metadata.pending_acks:
             metadata.pending_acks.remove(envelope.sender_id)
             await self._persist_session_metadata(metadata)
-        if not metadata.pending_acks and not metadata.rejected_by:
+        # Phase 2.0: activate as soon as we have enough acks; remaining
+        # pending invitees can still ack later but quorum doesn't wait
+        # on them. ``required_acks=None`` (V1 default) reduces to the
+        # all-acks-required behavior.
+        _, _, _, acks = self._quorum_counts(metadata)
+        required = self._required_acks(metadata)
+        if acks >= required:
             await self._activate_session(metadata.session_id)
 
     async def _handle_invite_reject(self, envelope: Envelope, metadata: SessionMetadata) -> None:
@@ -1568,11 +1627,32 @@ class Hub:
         if envelope.sender_id not in metadata.rejected_by:
             metadata.rejected_by.append(envelope.sender_id)
         await self._persist_session_metadata(metadata)
-        # All-or-nothing handshake: any reject fails the session.
-        await self._transition_session(metadata.session_id, SessionState.CLOSED, "invite_rejected")
-        waiter = self._session_open_waiters.get(metadata.session_id)
-        if waiter is not None and not waiter.done():
-            waiter.set_exception(ProtocolError(f"session rejected by {envelope.sender_id}"))
+
+        # Phase 2.0: with N-of-M quorum, a reject only fails the
+        # session if it makes the threshold unreachable. Otherwise
+        # we keep waiting for the remaining pending invitees, and may
+        # already have enough acks to activate now.
+        _, pending, _, acks = self._quorum_counts(metadata)
+        required = self._required_acks(metadata)
+
+        if pending + acks < required:
+            # No path to quorum — fail.
+            await self._transition_session(
+                metadata.session_id, SessionState.CLOSED, "quorum_unreachable"
+            )
+            waiter = self._session_open_waiters.get(metadata.session_id)
+            if waiter is not None and not waiter.done():
+                waiter.set_exception(
+                    ProtocolError(
+                        f"session {metadata.session_id!r} quorum_unreachable "
+                        f"(rejected by {envelope.sender_id})"
+                    )
+                )
+            return
+
+        # Quorum still reachable — and possibly already met.
+        if acks >= required:
+            await self._activate_session(metadata.session_id)
 
     async def _activate_session(self, session_id: str) -> None:
         metadata = self._sessions.get(session_id)

@@ -18,6 +18,7 @@ from typing import Any, Literal
 __all__ = (
     "EV_EXPECTATION_VIOLATED",
     "EV_HANDOFF",
+    "EV_QUORUM_CHANGED",
     "EV_SESSION_CLOSED",
     "EV_SESSION_EXPIRED",
     "EV_SESSION_INVITE",
@@ -55,6 +56,13 @@ EV_SESSION_INVITE_REJECT = "ag2.session.invite.reject"
 EV_SESSION_OPENED = "ag2.session.opened"
 EV_SESSION_CLOSED = "ag2.session.closed"
 EV_SESSION_EXPIRED = "ag2.session.expired"
+
+# Phase 2.0 — N-of-M quorum tracking. Emitted by the hub when the
+# count of active participants in a multi-party session changes
+# (typically a ``remove`` violation handler firing). ``event_data``
+# carries ``{"remaining": int, "required": int}`` so peers can react
+# without re-walking ``metadata.participants``.
+EV_QUORUM_CHANGED = "ag2.session.quorum_changed"
 
 EV_EXPECTATION_VIOLATED = "ag2.expectation.violated"
 
